@@ -6,10 +6,14 @@ worker thread, because a plan over a real tree takes minutes.
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +23,7 @@ from app.api.deps import CurrentUser
 from app.db import get_session
 from app.engines.base import EngineError
 from app.jobs import planner
+from app.jobs.events import broker
 from app.models import (
     Connection,
     FilterPreset,
@@ -26,6 +31,7 @@ from app.models import (
     JobRun,
     JobRunChange,
     RunMode,
+    RunStatus,
     RunTrigger,
 )
 from app.schemas.job import (
@@ -240,24 +246,89 @@ def run_job(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such job.")
 
-    if payload.mode == RunMode.live:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                "Live runs are not implemented yet. This release plans a run and "
-                "shows exactly what it would change, without changing anything."
-            ),
-        )
-
     try:
-        run = planner.create_run(session, job, trigger=RunTrigger.api, mode=RunMode.dry_run)
+        run = planner.create_run(session, job, trigger=RunTrigger.api, mode=payload.mode)
     except planner.RunConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except EngineError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    request.app.state.plan_runner.submit(run.id)
+    # A live run plans first and refuses before writing anything if the brake
+    # would be exceeded. See jobs.runner.
+    if payload.mode == RunMode.live:
+        request.app.state.live_runner.submit(run.id)
+    else:
+        request.app.state.plan_runner.submit(run.id)
     return RunRead.model_validate(run)
+
+
+@router.post("/runs/{run_id}/cancel", response_model=RunRead)
+def cancel_run(
+    run_id: int,
+    request: Request,
+    _user: CurrentUser,
+    session: Session = Depends(get_session),
+) -> RunRead:
+    """SIGTERM, ten seconds, then SIGKILL. SPEC section 6.3.
+
+    The grace period is not politeness: rclone removes the partial file it is
+    writing when it receives SIGTERM, and cannot when it is killed.
+    """
+    run = session.get(JobRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such run.")
+    if run.status not in (RunStatus.queued, RunStatus.running):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"That run already finished with status {run.status.value}.",
+        )
+
+    run.status = RunStatus.cancelled
+    session.commit()
+    request.app.state.live_runner.cancel(run_id)
+    session.refresh(run)
+    return RunRead.model_validate(run)
+
+
+@router.get("/runs/{run_id}/log")
+def get_run_log(
+    run_id: int, _user: CurrentUser, session: Session = Depends(get_session)
+) -> PlainTextResponse:
+    """The raw per-run log. Redacted as it was written. SPEC section 16."""
+    run = session.get(JobRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such run.")
+    if not run.log_path:
+        return PlainTextResponse("No log was captured for this run.")
+    path = Path(run.log_path)
+    if not path.is_file():
+        return PlainTextResponse("The log file for this run is no longer on disk.")
+    return PlainTextResponse(path.read_text(encoding="utf-8", errors="replace"))
+
+
+@router.get("/runs/{run_id}/stream")
+def stream_run(
+    run_id: int, _user: CurrentUser, session: Session = Depends(get_session)
+) -> StreamingResponse:
+    """Live output over Server-Sent Events. SPEC section 12.
+
+    Reads from the in-process broker rather than the database: a stream stays
+    open for the length of a sync, and holding a SQLite session that long would
+    block writers.
+    """
+    if session.get(JobRun, run_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such run.")
+
+    def emit() -> Iterator[str]:
+        for event in broker.subscribe(run_id):
+            payload = json.dumps({"kind": event.kind, "text": event.text})
+            yield f"data: {payload}\n\n"
+
+    return StreamingResponse(
+        emit(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/jobs/{job_id}/runs", response_model=list[RunRead])

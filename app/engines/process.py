@@ -7,9 +7,10 @@ Secrets reach rclone through the environment, never through argv, so a captured
 command is safe to store. The redactor is applied anyway, because output can echo
 a value back and because defence in depth costs nothing here.
 
-This module is the shared subprocess primitive. The streaming, cancellable run
-supervision that SPEC section 6.3 needs belongs to the runner at M3; what is here
-is the bounded, capture-everything call that connection tests and probes use.
+Two shapes live here. `run()` is the bounded, capture-everything call that
+connection tests and probes use. `stream()` is the long-lived, cancellable call a
+live sync needs: it yields output as it arrives and exposes the process so it can
+be signalled.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from app.crypto import Redactor
@@ -161,3 +162,101 @@ def run(
         stdout=redactor.redact(_truncate(completed.stdout or "")),
         stderr=redactor.redact(_truncate(completed.stderr or "")),
     )
+
+
+@dataclass
+class StreamingProcess:
+    """A running command whose output is consumed as it arrives.
+
+    Exists so a live sync can be watched and cancelled. SPEC section 6.3 asks for
+    SIGTERM, a ten second grace, then SIGKILL.
+
+    Verified against rclone 1.74.4: on SIGTERM it removes the partial file it was
+    writing and exits cleanly, so a cancelled transfer leaves no half-written file
+    under its final name. A SIGKILL skips that handler, so the grace period is not
+    cosmetic: killing early can leave a `<name>.<id>.partial` behind, which the
+    next sync sees as an extra file on the destination.
+    """
+
+    argv_redacted: list[str]
+    _popen: subprocess.Popen[str]
+    _redactor: Redactor
+
+    @property
+    def pid(self) -> int:
+        return self._popen.pid
+
+    @property
+    def command_line(self) -> str:
+        return " ".join(self.argv_redacted)
+
+    def lines(self) -> Iterator[str]:
+        """Yield redacted output lines as the process produces them."""
+        if self._popen.stdout is None:  # pragma: no cover - always piped by stream()
+            return
+        for raw in self._popen.stdout:
+            yield self._redactor.redact(raw.rstrip("\n"))
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self._popen.wait(timeout=timeout)
+
+    @property
+    def returncode(self) -> int | None:
+        return self._popen.returncode
+
+    def terminate(self, *, grace_seconds: float = 10.0) -> None:
+        """SIGTERM, then SIGKILL if it does not stop. SPEC section 6.3.
+
+        The grace period matters: rclone cleans up its partial file on SIGTERM
+        and cannot on SIGKILL.
+        """
+        if self._popen.poll() is not None:
+            return
+        logger.info("Terminating command", extra={"pid": self.pid})
+        self._popen.terminate()
+        try:
+            self._popen.wait(timeout=grace_seconds)
+            return
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Command ignored SIGTERM, killing. A partial file may be left behind.",
+                extra={"pid": self.pid},
+            )
+        self._popen.kill()
+        self._popen.wait(timeout=5)
+
+
+def stream(
+    argv: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    redactor: Redactor | None = None,
+    log_label: str | None = None,
+) -> StreamingProcess:
+    """Start a command and return it for line by line consumption.
+
+    stderr is merged into stdout so the caller sees one ordered stream. rclone
+    writes its JSON log to stderr, which is where the interesting output is.
+    """
+    redactor = redactor or Redactor([])
+    argv_list = list(argv)
+    argv_redacted = redactor.redact_argv(argv_list)
+
+    # Same reasoning as run(): overlay, never replace, or PATH disappears.
+    child_env = {**os.environ, **env} if env is not None else None
+
+    if log_label:
+        logger.info(
+            "Starting external command",
+            extra={"label": log_label, "command": " ".join(argv_redacted)},
+        )
+
+    popen = subprocess.Popen(  # noqa: S603 - fixed argv list, shell is never used
+        argv_list,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=child_env,
+    )
+    return StreamingProcess(argv_redacted=argv_redacted, _popen=popen, _redactor=redactor)

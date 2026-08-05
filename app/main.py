@@ -31,6 +31,7 @@ from app.api import api_router
 from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, session_scope
 from app.jobs.planner import PlanRunner
+from app.jobs.runner import LiveRunner
 from app.logging_conf import configure_logging
 from app.models import SECRET_KEY_FINGERPRINT, Setting
 
@@ -149,6 +150,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # test client never enters the lifespan context.
     app.state.binaries = binaries.collect(settings.expected_rclone_version)
     app.state.plan_runner = PlanRunner(
+        app.state.session_factory, box=app.state.secrets, settings=settings
+    )
+    app.state.live_runner = LiveRunner(
         app.state.session_factory, box=app.state.secrets, settings=settings
     )
 

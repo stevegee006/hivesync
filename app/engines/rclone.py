@@ -32,7 +32,15 @@ from app.crypto import SecretBox
 from app.engines import parsers, process, rcloneconf
 from app.engines.base import EngineError, Plan, PlannedChange, SyncEngine
 from app.engines.rcloneconf import ALIAS_DEST, ALIAS_SOURCE, RemoteConfigError
-from app.models import ChangeAction, ChangeSide, CompareMode, Connection, Direction, Job
+from app.models import (
+    ChangeAction,
+    ChangeSide,
+    CompareMode,
+    Connection,
+    DeleteMode,
+    Direction,
+    Job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +80,59 @@ class RcloneEngine(SyncEngine):
             raise EngineError(str(exc)) from exc
 
     def execute(self, job: Job, *, box: SecretBox, settings: Settings) -> Plan:
+        """Not used. A live run goes through jobs.runner, which needs to stream.
+
+        Kept to satisfy the interface. The runner calls build_sync_command and
+        drives the process itself, because a live run has to be watched and
+        cancellable and this signature cannot express that.
+        """
         raise EngineError(
-            "Live sync is not implemented yet. This release can plan a run and "
-            "show exactly what it would change, but not carry it out."
+            "Live runs are driven by the job runner, not by calling execute directly."
         )
+
+
+def build_sync_command(
+    job: Job,
+    prepared: rcloneconf.Prepared,
+    src_spec: str,
+    dst_spec: str,
+    *,
+    max_delete: int,
+) -> list[str]:
+    """The argv for a live one way sync.
+
+    --max-delete is always present. Invariant 7 has no exceptions, and this is
+    the only place a live sync command is built, so there is no path around it.
+
+    Deletion only happens at all when the job asks for it: without delete_mode
+    the command is a copy, which never removes anything from the destination.
+    """
+    operation = "copy" if job.delete_mode == DeleteMode.none else "sync"
+
+    return prepared.argv(
+        operation,
+        src_spec,
+        dst_spec,
+        "--use-json-log",
+        "-v",
+        "--stats",
+        "5s",
+        "--stats-one-line",
+        # The brake. Resolved from the percentage against the destination's real
+        # file count, because rclone takes a count and no percentage flag exists.
+        "--max-delete",
+        str(max_delete),
+        *comparison_args(job),
+        *filter_args(job),
+        *performance_args(job),
+    )
+
+
+def endpoints_and_paths(job: Job) -> tuple[Connection, Connection, str, str]:
+    """Direction-resolved connections and their subpaths, for the runner."""
+    source, dest = _endpoints_for(job)
+    read_path, write_path = _paths_for(job)
+    return source, dest, read_path, write_path
 
 
 def _endpoints_for(job: Job) -> tuple[Connection, Connection]:
@@ -379,7 +436,9 @@ def side_for(job: Job) -> ChangeSide:
 
 __all__ = [
     "RcloneEngine",
+    "build_sync_command",
     "comparison_args",
+    "endpoints_and_paths",
     "filter_args",
     "performance_args",
     "resolve_max_delete",

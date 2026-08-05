@@ -14,6 +14,7 @@ from app.models import (
     CompareMode,
     Connection,
     ConnectionType,
+    DeleteMode,
     Direction,
     Engine,
     FilterPreset,
@@ -204,7 +205,41 @@ def test_bidirectional_is_refused_with_an_explanation() -> None:
         engine.plan(_job(direction=Direction.bidirectional), box=None, settings=None)  # type: ignore[arg-type]
 
 
-def test_execute_refuses_rather_than_pretending() -> None:
+def test_execute_directs_callers_to_the_runner() -> None:
+    """A live run has to be streamed and cancellable, which this signature cannot
+    express, so the runner drives the process instead."""
     engine = rclone.RcloneEngine()
-    with pytest.raises(EngineError, match="not implemented"):
+    with pytest.raises(EngineError, match="job runner"):
         engine.execute(_job(), box=None, settings=None)  # type: ignore[arg-type]
+
+
+def test_sync_command_always_carries_the_delete_brake() -> None:
+    """Invariant 7 has no exceptions, and this is the only place a live sync
+    command is built."""
+    from app.crypto import Redactor
+    from app.engines.rcloneconf import ALIAS_DEST, ALIAS_SOURCE, Prepared
+
+    prepared = Prepared(endpoints={}, env={}, base_args=["--config", ""], redactor=Redactor([]))
+    argv = rclone.build_sync_command(
+        _job(delete_mode=DeleteMode.delete), prepared, "src:", "dst:", max_delete=7
+    )
+    assert "--max-delete" in argv
+    assert argv[argv.index("--max-delete") + 1] == "7"
+    assert "sync" in argv
+    _ = (ALIAS_DEST, ALIAS_SOURCE)
+
+
+def test_copy_is_used_when_deletion_is_off() -> None:
+    """Without delete_mode the command must not be able to remove anything, so
+    it is a copy rather than a sync with an unused brake."""
+    from app.crypto import Redactor
+    from app.engines.rcloneconf import Prepared
+
+    prepared = Prepared(endpoints={}, env={}, base_args=["--config", ""], redactor=Redactor([]))
+    argv = rclone.build_sync_command(
+        _job(delete_mode=DeleteMode.none), prepared, "src:", "dst:", max_delete=7
+    )
+    assert "copy" in argv
+    assert "sync" not in argv
+    # Still passed, so the invariant holds regardless of the operation.
+    assert "--max-delete" in argv
