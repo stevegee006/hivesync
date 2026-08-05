@@ -1,0 +1,43 @@
+# Integration test fixtures, per SPEC section 17.
+#
+# Not used at M0: nothing connects to these yet. They are declared now so the
+# connections milestone starts from a working set of endpoints rather than
+# inventing them at the same time as the code that talks to them.
+#
+# Bring up with `make test-integration`.
+services:
+  sftp:
+    image: atmoz/sftp:alpine
+    container_name: hivesync-test-sftp
+    ports:
+      - "2222:22"
+    # user:password:uid:gid:relative_home_directory
+    command: testuser:testpass:1001:1001:upload
+
+  ftp:
+    image: delfer/alpine-ftp-server:latest
+    container_name: hivesync-test-ftp
+    ports:
+      - "2121:21"
+      - "21000-21010:21000-21010"
+    environment:
+      USERS: "testuser|testpass|/ftp/testuser"
+      ADDRESS: localhost
+
+  smb:
+    image: dperson/samba:latest
+    container_name: hivesync-test-smb
+    ports:
+      - "1445:445"
+    environment:
+      USERID: 1000
+      GROUPID: 1000
+    command: >
+      -u "testuser;testpass"
+      -s "testshare;/share;yes;no;no;testuser"
+      -p
+    volumes:
+      - smb-share:/share
+
+volumes:
+  smb-share:

@@ -1,0 +1,14 @@
+/* Tailwind v4 entry point. Compiled by the standalone CLI, which is a single Go
+   binary, so there is no Node toolchain in the build. See the assets stage in
+   the Dockerfile, or run `make assets`.
+
+   @source is explicit rather than relying on automatic detection, because the
+   CSS file and the templates live in different directories. */
+@import "tailwindcss";
+
+@source "../../templates";
+
+@theme {
+  /* Paths are shown in monospace throughout the UI, per SPEC section 13. */
+  --font-mono: ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}

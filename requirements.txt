@@ -1,0 +1,18 @@
+# Runtime dependencies for the container image.
+#
+# These are ranges, not exact pins. Exact pins land after the first successful
+# build: run `make pin-deps`, which freezes the resolved set into this file.
+# Hash pinning (--require-hashes) is an M8 hardening item, see CLAUDE.md.
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.32,<1.0
+sqlalchemy>=2.0,<2.1
+alembic>=1.14,<2.0
+apscheduler>=3.10,<4.0
+jinja2>=3.1,<4.0
+python-multipart>=0.0.20,<1.0
+pydantic>=2.9,<3.0
+pydantic-settings>=2.6,<3.0
+cryptography>=43,<47
+argon2-cffi>=23.1,<26
+itsdangerous>=2.2,<3.0
+httpx>=0.27,<1.0

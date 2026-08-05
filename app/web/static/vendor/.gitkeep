@@ -1,0 +1,6 @@
+Vendored front end libraries are fetched into this directory by `make assets`,
+and by the assets stage of the Dockerfile during an image build. The files
+themselves are not committed, which is why this placeholder exists: StaticFiles
+needs the directory to be present at startup.
+
+Versions are pinned in versions.env.

@@ -1,0 +1,33 @@
+services:
+  hivesync:
+    build:
+      context: .
+      args:
+        RCLONE_VERSION: ${RCLONE_VERSION:-1.74.4}
+        TAILWIND_VERSION: ${TAILWIND_VERSION:-4.3.3}
+        HTMX_VERSION: ${HTMX_VERSION:-2.0.10}
+        ALPINE_VERSION: ${ALPINE_VERSION:-3.15.12}
+    image: ${HIVESYNC_IMAGE:-hivesync:latest}
+    container_name: hivesync
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Required. Generate with `make secret-key` and put it in .env.
+      HIVESYNC_SECRET_KEY: ${HIVESYNC_SECRET_KEY:?set HIVESYNC_SECRET_KEY in .env, see .env.example}
+      # Used once, to create the admin account. A password change is forced at
+      # first login, after which this can be removed.
+      HIVESYNC_ADMIN_USER: ${HIVESYNC_ADMIN_USER:-admin}
+      HIVESYNC_ADMIN_PASSWORD: ${HIVESYNC_ADMIN_PASSWORD:-}
+      HIVESYNC_AUTH_MODE: ${HIVESYNC_AUTH_MODE:-local}
+      HIVESYNC_LOG_LEVEL: ${HIVESYNC_LOG_LEVEL:-info}
+      TZ: ${TZ:-America/Denver}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    volumes:
+      - ./config:/config
+      # Local filesystem connections mount here. Add your own, read only where
+      # the job only reads. Permissions are managed on the host, not by the
+      # container: see PUID and PGID above.
+      # - /mnt/tank/media:/data/media
+      # - /mnt/synology-media:/data/synology-media

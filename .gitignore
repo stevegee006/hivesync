@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local runtime state. Never commit a database or a run log.
+config/
+*.db
+*.db-wal
+*.db-shm
+
+# Real secrets. Only .env.example is tracked.
+.env
+
+# Per-developer tool state, not project configuration.
+.claude/settings.local.json
+
+# Generated or fetched front end assets, produced by `make assets`.
+app/web/static/css/app.css
+app/web/static/vendor/*.js
+
+# Resolved version digests, written by `make pin-versions` for inspection.
+versions.observed
+files.zip

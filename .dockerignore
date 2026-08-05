@@ -1,0 +1,35 @@
+.git
+.gitignore
+.gitattributes
+.github
+__pycache__
+**/__pycache__
+*.py[cod]
+.venv
+venv
+.mypy_cache
+.ruff_cache
+.pytest_cache
+*.egg-info
+build
+dist
+
+# Never let host runtime state or secrets into the build context.
+config/
+*.db
+*.db-wal
+*.db-shm
+.env
+files.zip
+
+# Front end assets are built inside the image by the assets stage. Excluding the
+# local copies keeps a stale host-built file from shadowing a fresh build.
+app/web/static/css/app.css
+app/web/static/vendor/*.js
+
+tests
+docker-compose.yml
+docker-compose.test.yml
+README.md
+SPEC.md
+CLAUDE.md

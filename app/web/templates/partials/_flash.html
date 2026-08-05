@@ -1,0 +1,7 @@
+{# Error copy is looked up from a fixed map in app/web/__init__.py, never taken
+   from the query string, so nothing user supplied is rendered here. #}
+{% if error %}
+<div class="mb-4 rounded border border-red-800 bg-red-950/60 px-3 py-2 text-sm text-red-200">
+  {{ error }}
+</div>
+{% endif %}

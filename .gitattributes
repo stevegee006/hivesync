@@ -1,0 +1,11 @@
+# Shell scripts must use LF regardless of host platform. A CRLF in the shebang
+# line of docker/entrypoint.sh makes the container exit immediately with an
+# opaque error, and this repo is developed on Windows.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+*.py text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
