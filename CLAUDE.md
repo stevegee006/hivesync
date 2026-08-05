@@ -92,7 +92,7 @@ needs `docker login` and a manual QEMU binfmt registration, so prefer the tag.
 ```bash
 make dev            # run locally with reload
 make test           # unit tests
-make test-integration   # spins up docker-compose.test.yml fixtures
+make test-integration   # fixtures, then pytest inside the image on their network
 make lint           # ruff + mypy
 docker compose up --build
 ```
@@ -114,19 +114,24 @@ app/
   crypto.py          the ONLY module that touches secrets
   models/            SQLAlchemy models, full SPEC section 4 schema
   schemas/           Pydantic request/response models
-  engines/           todo, M2
-    base.py          SyncEngine interface: plan(), execute()
-    rclone.py        RcloneEngine
-    lftp.py          LftpEngine (M7, optional)
-    rcloneconf.py    remote definition rendering, env vars and temp config
-    parsers.py       --combined and --use-json-log parsing
-  capabilities.py    todo, M1. backend feature probe and intersection logic
+  probe.py           connection test and browse orchestration, host key trust
+  engines/
+    process.py       subprocess primitive, timeouts, redacted capture
+    rcloneconf.py    remote rendering via env vars, obscure, known_hosts, ini parse
+    inspect.py       listremotes, config providers, backend features, lsd, lsf
+    base.py          todo, M2. SyncEngine interface: plan(), execute()
+    rclone.py        todo, M2. RcloneEngine
+    parsers.py       todo, M2. --combined and --use-json-log parsing
+    lftp.py          todo, M7, optional
+  capabilities.py    probe interpretation and the two-endpoint intersection
   jobs/              todo, M3 and M4
     runner.py        run lifecycle, subprocess supervision, cancellation
     scheduler.py     APScheduler wiring
     archive.py       backup-dir path computation and validation
   api/               route modules mirroring SPEC.md section 12
-                     M0: health.py, auth.py
+                     health, auth, connections, credentials, rclone
+                     deps.py provides CurrentUser, so auth resolves before
+                     body validation
   web/               Jinja templates, HTMX partials
   notify.py          todo, M7
   metrics.py         todo, M7
