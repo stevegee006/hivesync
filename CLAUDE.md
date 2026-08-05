@@ -178,6 +178,9 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, docker, `procps` is not in `python:3.12-slim`, so there is no `ps` in the runtime image. Use `/proc` or `docker top`.
 - 2026-08-05, windows, `make` is not installed on the development host, so the Makefile targets cannot be run there. The equivalent raw commands are in the README. Consider dropping the Makefile in favour of a script if this keeps biting.
 - 2026-08-05, windows, a bind mounted `/config` reports mode 777 regardless of the chown in the entrypoint, because Docker Desktop's filesystem does not carry POSIX modes. Do not write a permission assertion that expects otherwise on Windows.
+- 2026-08-05, docker, `docker buildx ls` advertising `linux/arm64` does not mean arm64 builds work. Docker Desktop lists the platform but ships no binfmt handlers, so an arm64 stage dies with `exec format error`. Fix with `docker run --privileged --rm tonistiigi/binfmt --install arm64`, or build amd64 only, or let the GitHub Actions workflow do it (`docker/setup-qemu-action` handles this).
+- 2026-08-05, docker, `auths` keys present in `~/.docker/config.json` do **not** mean you are logged in. Docker Desktop leaves those keys behind when logged out, with the real tokens in an external credential store. Check with `docker info | grep -i username`, which prints nothing when unauthenticated.
+- 2026-08-05, tooling, never pipe a build or test command into `tail` when the exit code matters: the pipeline returns tail's status and a failure reports as success. Redirect to a file and check `$?`, or use `PIPESTATUS`.
 
 ## Open spec issues carried forward
 

@@ -144,10 +144,20 @@ use when reporting a problem.
 
 ## Publishing to Docker Hub
 
-Log in yourself first. Never put a registry token in this repo or in `.env`:
+Two prerequisites, both one-time.
+
+Log in. Never put a registry token in this repo or in `.env`:
 
 ```bash
 docker login
+```
+
+Register QEMU emulation, otherwise the arm64 half of the build fails with
+`exec format error`. Docker Desktop ships the platform list but not the binfmt
+handlers:
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install arm64
 ```
 
 Then build and push multi-arch, amd64 and arm64:
@@ -161,6 +171,10 @@ with `make push DOCKERHUB_NAMESPACE=other`.
 
 A first push creates the Docker Hub repository as **public** by default. Create it
 as private in Docker Hub beforehand if that is not what you want.
+
+If arm64 is not needed, `--platform linux/amd64` alone skips the emulation
+requirement entirely. The GitHub Actions workflow needs neither prerequisite: it
+runs `docker/setup-qemu-action` and authenticates from repository secrets.
 
 For automated publishing, `.github/workflows/docker-publish.yml` does the same on a
 tag push. It needs two repository secrets, `DOCKERHUB_USERNAME` and
