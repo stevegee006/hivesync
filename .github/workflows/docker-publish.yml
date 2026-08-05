@@ -39,7 +39,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/hivesync
+          # Hardcoded so the published tag does not silently depend on the value
+          # of a secret. Change here if the namespace ever changes.
+          images: geaves006/hivesync
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

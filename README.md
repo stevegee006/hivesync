@@ -148,15 +148,17 @@ Log in yourself first. Never put a registry token in this repo or in `.env`:
 docker login
 ```
 
-Then build and push multi-arch (amd64 and arm64), with your Docker Hub account or
-organisation as the namespace:
+Then build and push multi-arch, amd64 and arm64:
 
 ```bash
-make push DOCKERHUB_NAMESPACE=yournamespace
+make push
 ```
 
-This publishes `yournamespace/hivesync:0.1.0` and `:latest`. Publishing makes the
-image public unless the repository is set private in Docker Hub first.
+This publishes `geaves006/hivesync:0.1.0` and `:latest`. Override the namespace
+with `make push DOCKERHUB_NAMESPACE=other`.
+
+A first push creates the Docker Hub repository as **public** by default. Create it
+as private in Docker Hub beforehand if that is not what you want.
 
 For automated publishing, `.github/workflows/docker-publish.yml` does the same on a
 tag push. It needs two repository secrets, `DOCKERHUB_USERNAME` and

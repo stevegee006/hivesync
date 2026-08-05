@@ -15,9 +15,8 @@ VERSION ?= 0.1.0
 IMAGE_NAME ?= hivesync
 LOCAL_IMAGE := $(IMAGE_NAME):$(VERSION)
 
-# Docker Hub target. Set DOCKERHUB_NAMESPACE to your Docker Hub account or
-# organisation, either here, in the environment, or in .env.
-DOCKERHUB_NAMESPACE ?=
+# Docker Hub target. Override on the command line to publish elsewhere.
+DOCKERHUB_NAMESPACE ?= geaves006
 REGISTRY_IMAGE := docker.io/$(DOCKERHUB_NAMESPACE)/$(IMAGE_NAME)
 PLATFORMS ?= linux/amd64,linux/arm64
 
