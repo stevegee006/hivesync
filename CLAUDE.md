@@ -48,7 +48,21 @@ Container, `docker compose up`, verified 2026-08-05:
   complete and root cannot be regained. Remapping to `PUID=1500` works.
 - `TZ` reaches the app: startup logs `America/Denver`.
 
-Published to Docker Hub: not yet. See the Docker Hub section below.
+Also verified in CI on clean Linux infrastructure, which reproduces the same
+health output and asserts it on every push and pull request. The workflow starts
+the container and checks health, `/login`, and that PID 1 is not root, so M0's
+acceptance criterion is now regression tested rather than a one-off observation.
+
+Published: `geaves006/hivesync:0.1.0`, `:0.1` and `:latest`, linux/amd64 and
+linux/arm64, from tag `v0.1.0`. The published image was pulled back and confirmed
+to run and report healthy.
+
+Repository: `stevegee006/hivesync`, private. Flip to public in GitHub settings if
+wanted, bearing in mind that SPEC.md and CLAUDE.md describe the network layout and
+are excluded from the image by `.dockerignore`.
+
+Publishing is tag gated: only a `v*` tag pushes to Docker Hub. Local publishing
+needs `docker login` and a manual QEMU binfmt registration, so prefer the tag.
 
 ## Rules
 
