@@ -23,7 +23,7 @@ from typing import Any
 
 from app.crypto import Redactor
 from app.engines import process
-from app.engines.rcloneconf import RCLONE, Prepared, RemoteConfigError
+from app.engines.rcloneconf import RCLONE, Prepared
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +171,10 @@ def list_dirs(prepared: Prepared, alias: str, subpath: str | None = None) -> lis
     is identified by the trailing slash that lsf appends.
     """
     endpoint = prepared.endpoints[alias]
-    try:
-        target = endpoint.spec(subpath)
-    except RemoteConfigError as exc:
-        raise InspectError(str(exc)) from exc
+    # RemoteConfigError propagates deliberately. A rejected path is the caller
+    # asking for something not allowed, which is a client error, not a failure of
+    # the remote. The API layer maps the two to different status codes.
+    target = endpoint.spec(subpath)
 
     result = process.run(
         prepared.argv("lsf", "--format", "p", "--dir-slash", target, *_FAIL_FAST_ARGS),

@@ -23,7 +23,12 @@ from app.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers defaults to True, which switches off every logger
+    # that alembic.ini does not name. In-process that silently kills application
+    # logging for the rest of the run, and the symptom is log lines simply not
+    # appearing rather than an error. Found by the redaction sweep, which asserts
+    # that expected content is present as well as that secrets are absent.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 settings = get_settings()
 settings.ensure_directories()

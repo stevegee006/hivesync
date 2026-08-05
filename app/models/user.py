@@ -12,10 +12,10 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, str_enum, utcnow
+from app.models.base import Base, UtcDateTime, str_enum, utcnow
 
 
 class UserRole(enum.StrEnum):
@@ -32,10 +32,8 @@ class User(Base):
         str_enum(UserRole, length=16), nullable=False, default=UserRole.admin
     )
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
-    )
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
     def __repr__(self) -> str:
         return f"User(id={self.id!r}, username={self.username!r}, role={self.role!r})"

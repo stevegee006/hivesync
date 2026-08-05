@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}{% if connection %}{{ connection.name }}{% else %}New connection{% endif %}{% endblock %}
+
+{% block content %}
+<div class="flex items-baseline justify-between">
+  <h1 class="text-xl font-semibold tracking-tight text-slate-100">
+    {% if connection %}{{ connection.name }}{% else %}New connection{% endif %}
+  </h1>
+  <a href="/connections" class="text-sm text-slate-400 hover:text-slate-100">Back</a>
+</div>
+
+{% include "partials/_flash.html" %}
+
+{# The protocol picker drives which fields apply. Alpine hides the irrelevant
+   ones, and the server validates regardless: a hidden field is a convenience,
+   never a guarantee. #}
+<form method="post"
+      action="{% if connection %}/connections/{{ connection.id }}{% else %}/connections{% endif %}"
+      class="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2"
+      x-data="{ type: '{{ (connection.type.value if connection else 'sftp') }}',
+                mode: '{{ (connection.rclone_mode.value if connection and connection.rclone_mode else 'inline') }}' }">
+
+  <div class="space-y-4">
+    <div>
+      <label for="name" class="block text-sm text-slate-400">Name</label>
+      <input id="name" name="name" required maxlength="128"
+             value="{{ connection.name if connection else '' }}"
+             class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+    </div>
+
+    <div>
+      <label for="type" class="block text-sm text-slate-400">Protocol</label>
+      <select id="type" name="type" x-model="type"
+              class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        <option value="local">local filesystem</option>
+        <option value="sftp">SFTP</option>
+        <option value="ftp">FTP</option>
+        <option value="ftps">FTPS</option>
+        <option value="smb">SMB / CIFS</option>
+        <option disabled>──────────</option>
+        <option value="rclone_remote">rclone remote (advanced)</option>
+      </select>
+      <p class="mt-1 text-xs text-slate-500">
+        This is what you are talking to. It is not the engine: lftp is a client,
+        not a protocol.
+      </p>
+    </div>
+
+    <template x-if="type !== 'local' && type !== 'rclone_remote'">
+      <div class="space-y-4">
+        <div class="grid grid-cols-3 gap-3">
+          <div class="col-span-2">
+            <label for="host" class="block text-sm text-slate-400">Host</label>
+            <input id="host" name="host" maxlength="255"
+                   value="{{ connection.host or '' if connection else '' }}"
+                   class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          </div>
+          <div>
+            <label for="port" class="block text-sm text-slate-400">Port</label>
+            <input id="port" name="port" type="number" min="1" max="65535"
+                   value="{{ connection.port or '' if connection else '' }}"
+                   class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          </div>
+        </div>
+        <div>
+          <label for="username" class="block text-sm text-slate-400">Username</label>
+          <input id="username" name="username" maxlength="255"
+                 value="{{ connection.username or '' if connection else '' }}"
+                 class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        </div>
+      </div>
+    </template>
+
+    <template x-if="type === 'smb'">
+      <div>
+        <label for="share" class="block text-sm text-slate-400">Share</label>
+        <input id="share" name="share" maxlength="255"
+               value="{{ connection.share or '' if connection else '' }}"
+               class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        <p class="mt-1 text-xs text-slate-500">
+          Separate from the path. rclone addresses SMB as
+          <span class="font-mono">remote:Share/sub/path</span>, so the share is the
+          first path element.
+        </p>
+      </div>
+    </template>
+
+    <template x-if="type === 'rclone_remote'">
+      <div class="space-y-4">
+        <div>
+          <label for="rclone_mode" class="block text-sm text-slate-400">Mode</label>
+          <select id="rclone_mode" name="rclone_mode" x-model="mode"
+                  class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+            <option value="inline">inline, defined here</option>
+            <option value="imported">imported from the mounted rclone.conf</option>
+          </select>
+        </div>
+        <template x-if="mode === 'inline'">
+          <div>
+            <label for="rclone_backend_type" class="block text-sm text-slate-400">Backend type</label>
+            <input id="rclone_backend_type" name="rclone_backend_type" maxlength="64"
+                   list="backend-list"
+                   value="{{ connection.rclone_backend_type or '' if connection else '' }}"
+                   class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+            <datalist id="backend-list">
+              {% for backend in backends %}<option value="{{ backend }}"></option>{% endfor %}
+            </datalist>
+            <p class="mt-1 text-xs text-slate-500">
+              Populated from <span class="font-mono">rclone config providers</span>
+              at runtime, never a hardcoded list.
+            </p>
+          </div>
+        </template>
+        <template x-if="mode === 'imported'">
+          <div>
+            <label for="rclone_remote_name" class="block text-sm text-slate-400">Remote</label>
+            <select id="rclone_remote_name" name="rclone_remote_name"
+                    class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+              <option value="">select a remote</option>
+              {% for remote in imported_remotes %}
+              <option value="{{ remote }}"
+                {% if connection and connection.rclone_remote_name == remote %}selected{% endif %}>
+                {{ remote }}
+              </option>
+              {% endfor %}
+            </select>
+            <p class="mt-1 text-xs text-slate-500">
+              Read from the config mounted at
+              <span class="font-mono">/config/rclone/rclone.conf</span>. That file is
+              opened read only and never written. No credentials from it enter this
+              application's database.
+              {% if imported_remotes_error %}
+              <span class="mt-1 block text-amber-400">{{ imported_remotes_error }}</span>
+              {% endif %}
+            </p>
+          </div>
+        </template>
+      </div>
+    </template>
+  </div>
+
+  <div class="space-y-4">
+    <div>
+      <label for="base_path" class="block text-sm text-slate-400">Base path</label>
+      <input id="base_path" name="base_path"
+             value="{{ connection.base_path if connection else '' }}"
+             class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+      {% if connection %}
+      <button type="button"
+              hx-get="/connections/{{ connection.id }}/browse-partial"
+              hx-target="#browser" hx-swap="innerHTML"
+              class="mt-2 text-xs text-slate-400 underline decoration-slate-700 hover:text-slate-100">
+        Browse
+      </button>
+      {% endif %}
+    </div>
+
+    <div>
+      <label for="credential_id" class="block text-sm text-slate-400">Credential</label>
+      <select id="credential_id" name="credential_id"
+              class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        <option value="">none</option>
+        {% for credential in credentials %}
+        <option value="{{ credential.id }}"
+          {% if connection and connection.credential_id == credential.id %}selected{% endif %}>
+          {{ credential.name }} ({{ credential.kind.value }})
+        </option>
+        {% endfor %}
+      </select>
+      <p class="mt-1 text-xs text-slate-500">
+        Stored encrypted. Never displayed again, by design.
+        <a href="/credentials" class="underline decoration-slate-700 hover:text-slate-300">Manage</a>
+      </p>
+    </div>
+
+    <template x-if="type === 'local'">
+      <div>
+        <label for="sentinel_file" class="block text-sm text-slate-400">Sentinel file</label>
+        <input id="sentinel_file" name="sentinel_file" maxlength="255"
+               value="{{ connection.sentinel_file or '' if connection else '' }}"
+               class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        <p class="mt-1 text-xs text-slate-500">
+          Optional, and strongly recommended for a network mount. A stale cifs or
+          NFS mount presents as an empty directory, which is exactly what makes a
+          sync look like every file was deleted. If this filename is not present,
+          the run is refused.
+        </p>
+      </div>
+    </template>
+
+    <div>
+      <label for="extra_opts" class="block text-sm text-slate-400">Advanced options</label>
+      <textarea id="extra_opts" name="extra_opts" rows="4"
+                class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-100 focus:border-slate-500 focus:outline-none"
+                placeholder="one per line: key = value">{{ extra_opts_text }}</textarea>
+      <p class="mt-1 text-xs text-slate-500">
+        Passed straight through to rclone as backend options, applied last so they
+        override anything chosen for you.
+      </p>
+    </div>
+  </div>
+
+  <div class="lg:col-span-2 flex items-center gap-3 border-t border-slate-800 pt-4">
+    <button type="submit"
+            class="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-white">
+      Save
+    </button>
+    {% if connection %}
+    <button type="button"
+            hx-post="/connections/{{ connection.id }}/test-partial"
+            hx-target="#test-result" hx-swap="innerHTML"
+            class="rounded border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-slate-500">
+      Test connection
+    </button>
+    {% endif %}
+  </div>
+</form>
+
+{% if connection %}
+<div id="test-result" class="mt-6">{% include "connections/_test_result.html" %}</div>
+<div id="browser" class="mt-6"></div>
+{% endif %}
+{% endblock %}

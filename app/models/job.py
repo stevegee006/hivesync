@@ -25,7 +25,6 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -36,7 +35,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, str_enum
+from app.models.base import Base, TimestampMixin, UtcDateTime, str_enum
 from app.models.connection import Connection
 from app.models.filter_preset import FilterPreset, job_filter_preset
 
@@ -232,8 +231,8 @@ class JobRun(Base):
         str_enum(RunStatus, length=16), nullable=False, default=RunStatus.queued
     )
 
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     files_transferred: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -270,7 +269,7 @@ class JobRunChange(Base):
     side: Mapped[ChangeSide] = mapped_column(str_enum(ChangeSide, length=16), nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)
     size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    mtime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    mtime: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:

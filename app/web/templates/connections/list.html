@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Connections{% endblock %}
+
+{% block content %}
+<div class="flex items-baseline justify-between">
+  <h1 class="text-xl font-semibold tracking-tight text-slate-100">Connections</h1>
+  <a href="/connections/new"
+     class="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-white">
+    New connection
+  </a>
+</div>
+
+{% include "partials/_flash.html" %}
+
+{% if not connections %}
+<div class="mt-6 rounded border border-slate-800 bg-slate-900/50 px-6 py-10 text-center">
+  <p class="text-sm text-slate-400">No connections yet.</p>
+  <p class="mx-auto mt-2 max-w-md text-xs text-slate-500">
+    A connection is one endpoint: a protocol, a location, and a credential. Jobs
+    pair two of them.
+  </p>
+</div>
+{% else %}
+<div class="mt-6 overflow-x-auto rounded border border-slate-800">
+  <table class="min-w-full divide-y divide-slate-800 text-sm">
+    <thead class="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-500">
+      <tr>
+        <th class="px-4 py-2 text-left">Status</th>
+        <th class="px-4 py-2 text-left">Name</th>
+        <th class="px-4 py-2 text-left">Type</th>
+        <th class="px-4 py-2 text-left">Resolves to</th>
+        <th class="px-4 py-2 text-left">Capabilities</th>
+        <th class="px-4 py-2"></th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800 bg-slate-900/30">
+      {% for connection in connections %}
+      <tr>
+        <td class="px-4 py-2 whitespace-nowrap">
+          {% if connection.last_test_ok %}
+          <span class="inline-flex items-center gap-1.5 text-emerald-400">
+            <span class="h-2 w-2 rounded-full bg-emerald-400"></span> ok
+          </span>
+          {% elif connection.last_test_ok is false %}
+          <span class="inline-flex items-center gap-1.5 text-red-400" title="{{ connection.last_test_error }}">
+            <span class="h-2 w-2 rounded-full bg-red-400"></span> failed
+          </span>
+          {% else %}
+          <span class="inline-flex items-center gap-1.5 text-slate-500">
+            <span class="h-2 w-2 rounded-full bg-slate-600"></span> untested
+          </span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-2">
+          <a href="/connections/{{ connection.id }}" class="text-slate-100 hover:underline">
+            {{ connection.name }}
+          </a>
+        </td>
+        <td class="px-4 py-2 font-mono text-xs text-slate-400">{{ connection.type.value }}</td>
+        <td class="px-4 py-2 font-mono text-xs text-slate-400">
+          {{ connection.resolved_path or "unresolved" }}
+        </td>
+        <td class="px-4 py-2 text-xs text-slate-500">
+          {% set caps = connection.capabilities %}
+          {% if not caps or not caps.probed %}
+            not probed
+          {% else %}
+            {% if caps.hashes %}{{ caps.hashes | length }} hash types{% else %}no hashes{% endif %}
+            {% if not caps.can_set_modtime %} / no modtime write{% endif %}
+            {% if caps.stale %} / stale{% endif %}
+          {% endif %}
+        </td>
+        <td class="px-4 py-2 text-right whitespace-nowrap">
+          <a href="/connections/{{ connection.id }}"
+             class="text-xs text-slate-400 hover:text-slate-100">Edit</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="mt-4 text-xs text-slate-500">
+  Capabilities are read from the endpoint itself when you test it, not from a
+  table of assumptions. Use
+  <a href="/compatibility" class="underline decoration-slate-700 hover:text-slate-300">
+    compatibility</a>
+  to see what a job pairing two of these could do.
+</p>
+{% endif %}
+{% endblock %}

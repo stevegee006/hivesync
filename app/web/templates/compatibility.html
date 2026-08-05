@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Compatibility{% endblock %}
+
+{% block content %}
+<h1 class="text-xl font-semibold tracking-tight text-slate-100">Compatibility</h1>
+<p class="mt-1 max-w-2xl text-sm text-slate-500">
+  What a job pairing two endpoints would be allowed to do, derived from the
+  capabilities each one reported when it was tested. Nothing here is a per-protocol
+  assumption: it is read from the endpoints themselves. The job editor will use
+  exactly these rules and these explanations.
+</p>
+
+{% include "partials/_flash.html" %}
+
+<form method="get" action="/compatibility" class="mt-6 flex flex-wrap items-end gap-3">
+  <div>
+    <label for="source_id" class="block text-sm text-slate-400">Source</label>
+    <select id="source_id" name="source_id"
+            class="mt-1 rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+      {% for connection in connections %}
+      <option value="{{ connection.id }}" {% if source and source.id == connection.id %}selected{% endif %}>
+        {{ connection.name }} ({{ connection.type.value }})
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="dest_id" class="block text-sm text-slate-400">Destination</label>
+    <select id="dest_id" name="dest_id"
+            class="mt-1 rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+      {% for connection in connections %}
+      <option value="{{ connection.id }}" {% if dest and dest.id == connection.id %}selected{% endif %}>
+        {{ connection.name }} ({{ connection.type.value }})
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit"
+          class="rounded border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:border-slate-500">
+    Compare
+  </button>
+</form>
+
+{% if connections | length < 2 %}
+<p class="mt-6 rounded border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
+  Two connections are needed to compare. <a href="/connections/new" class="underline">Add one</a>.
+</p>
+{% elif result %}
+
+{% if result.warnings %}
+<div class="mt-6 space-y-2">
+  {% for warning in result.warnings %}
+  <div class="rounded border border-amber-800 bg-amber-950/40 px-4 py-2 text-sm text-amber-200">
+    {{ warning }}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="mt-6 overflow-x-auto rounded border border-slate-800">
+  <table class="min-w-full divide-y divide-slate-800 text-sm">
+    <thead class="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-500">
+      <tr>
+        <th class="px-4 py-2 text-left">Job option</th>
+        <th class="px-4 py-2 text-left">Available</th>
+        <th class="px-4 py-2 text-left">Why</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800 bg-slate-900/30">
+      {% for label, option in [
+        ('Compare by checksum', result.checksum),
+        ('Bidirectional sync', result.bidirectional),
+        ('Deletion archiving', result.archive),
+        ('Preserve empty directories', result.empty_dirs)
+      ] %}
+      <tr>
+        <td class="px-4 py-2 text-slate-200">{{ label }}</td>
+        <td class="px-4 py-2 whitespace-nowrap">
+          {% if option.available %}
+          <span class="text-emerald-400">yes</span>
+          {% else %}
+          <span class="text-slate-500">no</span>
+          {% endif %}
+        </td>
+        {# The reason is the product, not a nicety: SPEC 5.4 requires every
+           disabled option explain itself inline. #}
+        <td class="px-4 py-2 text-xs text-slate-400">
+          {{ option.reason or option.warning or '' }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+  {% for name, caps in [(result.source, result.source_capabilities), (result.dest, result.dest_capabilities)] %}
+  <div class="rounded border border-slate-800 bg-slate-900/50 px-4 py-3">
+    <p class="font-mono text-sm text-slate-200">{{ name }}</p>
+    {% if not caps.probed %}
+    <p class="mt-2 text-xs text-amber-400">
+      Never tested, so its capabilities are unknown. Test it to find out what it
+      supports.
+    </p>
+    {% else %}
+    <dl class="mt-2 space-y-1 text-xs">
+      <div class="flex justify-between gap-4">
+        <dt class="text-slate-500">Hash types</dt>
+        <dd class="font-mono text-right text-slate-300">
+          {{ caps.hashes | join(', ') if caps.hashes else 'none' }}
+        </dd>
+      </div>
+      <div class="flex justify-between gap-4">
+        <dt class="text-slate-500">Writes modification times</dt>
+        <dd class="font-mono text-slate-300">{{ 'yes' if caps.can_set_modtime else 'no' }}</dd>
+      </div>
+      <div class="flex justify-between gap-4">
+        <dt class="text-slate-500">Server-side move</dt>
+        <dd class="font-mono text-slate-300">{{ 'yes' if caps.supports_move else 'no' }}</dd>
+      </div>
+      <div class="flex justify-between gap-4">
+        <dt class="text-slate-500">Empty directories</dt>
+        <dd class="font-mono text-slate-300">{{ 'yes' if caps.supports_empty_dirs else 'no' }}</dd>
+      </div>
+      <div class="flex justify-between gap-4">
+        <dt class="text-slate-500">Case insensitive</dt>
+        <dd class="font-mono text-slate-300">{{ 'yes' if caps.case_insensitive else 'no' }}</dd>
+      </div>
+    </dl>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% if result.shared_hashes %}
+<p class="mt-4 text-xs text-slate-500">
+  Shared hash types:
+  <span class="font-mono text-slate-400">{{ result.shared_hashes | join(', ') }}</span>
+</p>
+{% endif %}
+{% endif %}
+{% endblock %}

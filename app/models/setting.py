@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, utcnow
+from app.models.base import Base, UtcDateTime, utcnow
 
 # Well known keys.
 SECRET_KEY_FINGERPRINT = "secret_key_fingerprint"
@@ -24,7 +24,7 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
     def __repr__(self) -> str:

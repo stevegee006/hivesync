@@ -19,7 +19,6 @@ from typing import Any
 
 from sqlalchemy import (
     Boolean,
-    DateTime,
     ForeignKey,
     Integer,
     String,
@@ -28,7 +27,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, str_enum
+from app.models.base import Base, TimestampMixin, UtcDateTime, str_enum
 from app.models.credential import Credential
 
 
@@ -83,9 +82,7 @@ class Connection(Base, TimestampMixin):
     # Populated by the capability probe. SPEC section 5.4. Shape is whatever the
     # pinned rclone reports, deliberately not modelled as columns.
     capabilities: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    capabilities_probed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    capabilities_probed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
     # Stale mount guard for local connections. SPEC section 6.4.
     sentinel_file: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -93,7 +90,7 @@ class Connection(Base, TimestampMixin):
     # SFTP host key pinning. SPEC section 15.
     host_key_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     last_test_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 

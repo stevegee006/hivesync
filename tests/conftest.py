@@ -59,6 +59,16 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
+def app_settings_path(tmp_path: Path) -> Path:
+    """The config directory the app fixture is using, for on-disk assertions.
+
+    tmp_path is function scoped, so this is the same directory the app writes to
+    within a single test.
+    """
+    return tmp_path
+
+
+@pytest.fixture
 def app(settings: Settings) -> FastAPI:
     create_schema(settings)
     return create_app(settings)
