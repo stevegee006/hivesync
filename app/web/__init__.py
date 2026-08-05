@@ -775,6 +775,27 @@ def run_job_live_form(
     return RedirectResponse(url=f"/runs/{run.id}", status_code=303)
 
 
+@router.post("/jobs/{job_id}/resync", response_class=HTMLResponse)
+def resync_job_form(job_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
+    """Explicit first sync. Never automatic: a resync makes one side match the
+    other for any file that differs. SPEC section 10.1."""
+    security.require_user(request, session)
+    job = session.get(Job, job_id)
+    if job is None or job.direction != Direction.bidirectional:
+        return RedirectResponse(url="/jobs", status_code=303)
+    try:
+        run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+    except planner.RunConflict:
+        existing = next(iter(planner.latest_runs(session, job.id, limit=1)), None)
+        return RedirectResponse(
+            url=f"/runs/{existing.id}" if existing else f"/jobs/{job.id}", status_code=303
+        )
+    run.is_resync = True
+    session.commit()
+    request.app.state.live_runner.submit(run.id)
+    return RedirectResponse(url=f"/runs/{run.id}", status_code=303)
+
+
 @router.post("/runs/{run_id}/cancel", response_class=HTMLResponse)
 def cancel_run_form(run_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
     security.require_user(request, session)

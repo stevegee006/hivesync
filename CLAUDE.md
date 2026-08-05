@@ -12,8 +12,8 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | M4 |
-| Milestones complete | M0, M1, M2, M3 |
+| Milestone in progress | M5 |
+| Milestones complete | M0, M1, M2, M3, M4 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
@@ -230,6 +230,50 @@ FTP and SMB fixtures, ruff and mypy clean.
 Remaining for M1: nothing blocking. The connection editor, credentials page,
 directory browser and compatibility page are built; the job editor that will
 consume the intersection logic belongs to a later milestone.
+
+### M5 bidirectional, verified against rclone 1.74.4
+
+**`--max-delete` is a PERCENTAGE for bisync and a COUNT for sync.** Same flag,
+different units. Verified: `--max-delete 10` produces
+`Safety abort: too many deletes (>10%, 3 of 10)`. Never call
+`resolve_max_delete()` for a bisync command: on a 1000 file destination a 20%
+brake resolves to 200, which bisync reads as 200 percent and the brake is gone,
+on the one direction that can damage both copies. Pass `job.max_delete_pct`
+straight through. Ironically SPEC 6.4's percentage framing is right for bisync
+and wrong for sync.
+
+**A nonzero `--modify-window` disables the newer and older conflict policies
+entirely.** Not merely within the window: verified with versions ten seconds
+apart and a one second window. With the flag there is no winner, both versions
+are renamed to `.conflict1` and `.conflict2`, and **the file disappears from its
+original name**. Without it, or with `--modify-window 0`, the newer version wins
+and the loser is kept as `.conflict1`. `path1` and the other non-time policies
+are unaffected. `Job.modify_window` defaults to `1s`, so passing it blindly would
+silently discard the operator's chosen conflict policy on every bidirectional
+job. `bisync.modify_window_applies()` drops it for time-based policies only.
+
+**bisync has more than one safety abort**, and they are pre-flight, aborting
+before anything changes:
+- `too many deletes (>N%, x of y)` against the `--max-delete` percentage.
+- `all files were changed on PathN`, which fires when 100% of a side changed.
+  A restored-from-backup or re-encrypted tree looks like this. It also means a
+  test fixture whose only file is the conflicting one is refused before any
+  conflict handling happens.
+
+Both end with `Run with --force if desired`, which is what detection matches.
+**Do not match on `Safety abort:`**: under `--use-json-log` rclone moves that
+prefix into a separate `object` field and the obvious marker silently never fires.
+
+**A first run and a wiped workdir are indistinguishable.** Both produce
+`Bisync aborted. Must run --resync to recover.` and exit 7. One detection path
+drives one recovery prompt, and `Job.bisync_initialized` cannot be trusted alone
+because the workdir can vanish underneath it. Seeing the message clears the flag.
+
+`--workdir` defaults to `/root/.cache/rclone/bisync`, wrong for a container
+running as uid 1000 and not persistent. Always set it to `/config/bisync/<job-id>`.
+
+The colour flag is `--color NEVER`. There is no `--no-color`, and passing one
+makes rclone misparse the whole command into `unknown command`.
 
 ### M4 scheduler design
 

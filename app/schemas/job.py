@@ -62,6 +62,8 @@ class JobBase(BaseModel):
 
     max_delete_pct: int = Field(default=20, ge=0, le=100)
     conflict_resolve: ConflictResolve = ConflictResolve.newer
+    # Opt in to bisync's own stale mount guard. See app/engines/bisync.py.
+    check_access: bool = False
 
     schedule_cron: str | None = Field(default=None, max_length=128)
     timezone: str = "UTC"
@@ -79,6 +81,15 @@ class JobBase(BaseModel):
             raise ValueError(
                 "The source and destination are the same connection and the same "
                 "path, so this job would sync a directory onto itself."
+            )
+
+        if self.direction == Direction.bidirectional and self.delete_mode != DeleteMode.none:
+            # bisync propagates deletions itself, driven by its listing state.
+            # A separate delete mode would be a second, conflicting opinion about
+            # what to remove.
+            raise ValueError(
+                "Bidirectional sync handles deletions itself, so the extra files "
+                "setting must be 'leave them alone'. The delete brake still applies."
             )
 
         if self.engine == Engine.lftp:
@@ -182,6 +193,7 @@ class RunRead(BaseModel):
     trigger: RunTrigger
     mode: RunMode
     status: RunStatus
+    is_resync: bool
     started_at: datetime | None
     finished_at: datetime | None
     exit_code: int | None

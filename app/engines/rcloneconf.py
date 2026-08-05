@@ -295,7 +295,11 @@ class Prepared:
     redactor: Redactor
 
     def argv(self, *args: str) -> list[str]:
-        return [RCLONE, *self.base_args, *args]
+        # --color NEVER, because bisync colours its output and ANSI escapes in a
+        # stored log or a parsed error message help nobody. The flag is
+        # `--color NEVER`; there is no `--no-color`, and passing one makes rclone
+        # misparse the whole command.
+        return [RCLONE, *self.base_args, "--color", "NEVER", *args]
 
 
 @contextmanager

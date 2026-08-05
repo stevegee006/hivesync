@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
 from app.crypto import SecretBox
-from app.engines import parsers, process, rcloneconf
+from app.engines import bisync, parsers, process, rcloneconf
 from app.engines.base import EngineError, Plan
 from app.engines.rclone import (
     RcloneEngine,
@@ -48,16 +48,19 @@ from app.jobs.events import RunEvent, broker
 from app.models import (
     ChangeAction,
     ConnectionType,
+    Direction,
     Job,
     JobRun,
     JobRunChange,
     RunStatus,
+    RunTrigger,
     utcnow,
 )
 
 logger = logging.getLogger(__name__)
 
 MAX_PERSISTED_CHANGES = 5000
+PLAN_TIMEOUT_SECONDS = 15 * 60
 
 
 class BrakeEngaged(Exception):
@@ -142,6 +145,129 @@ class LiveRunner:
     # ----------------------------------------------------------------------
 
     def _execute(self, session: Session, run: JobRun, job: Job) -> None:
+        if job.direction == Direction.bidirectional:
+            self._execute_bisync(session, run, job)
+            return
+        self._execute_one_way(session, run, job)
+
+    # ------------------------------------------------------------ bidirectional
+
+    def _execute_bisync(self, session: Session, run: JobRun, job: Job) -> None:
+        """A bidirectional run. SPEC section 10.
+
+        Resync is never automatic. Invariant: `bisync never auto-resyncs`. A job
+        that has not been initialised, or whose workdir has been lost, is refused
+        with a message that offers the explicit action instead.
+        """
+        if not job.bisync_initialized and not run.is_resync:
+            raise BrakeEngaged(
+                f"'{job.name}' has not had its first sync yet. Bidirectional sync "
+                "needs one, and it is not automatic: a resync makes the second "
+                "path match the first for any file that differs, so it has to be "
+                "a decision rather than a side effect. Use First Sync on the job."
+            )
+
+        workdir = bisync.workdir_for(str(self._settings.bisync_dir), job.id)
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+        source, dest, read_path, write_path = endpoints_and_paths(job)
+
+        with rcloneconf.prepare(
+            {ALIAS_SOURCE: source, ALIAS_DEST: dest}, box=self._box, settings=self._settings
+        ) as prepared:
+            path1 = prepared.endpoints[ALIAS_SOURCE].spec(read_path or None)
+            path2 = prepared.endpoints[ALIAS_DEST].spec(write_path or None)
+
+            # Pre-flight, the same shape as a one way run. bisync also has its
+            # own percentage brake that aborts before changing anything, so this
+            # is belt and braces, but it produces the better message.
+            if not run.is_resync:
+                self._bisync_preflight(job, prepared, path1, path2, workdir)
+
+            argv = bisync.build_bisync_command(
+                job,
+                prepared,
+                path1,
+                path2,
+                workdir=workdir,
+                resync=run.is_resync,
+                unattended=run.trigger == RunTrigger.schedule,
+            )
+            running = process.stream(
+                argv, env=prepared.env, redactor=prepared.redactor, log_label="bisync"
+            )
+            with self._lock:
+                self._active[run.id] = running
+
+            run.command_redacted = running.command_line
+            session.commit()
+            _emit(run.id, "status", "Resyncing." if run.is_resync else "Syncing both ways.")
+
+            log_path = _log_path(self._settings, job, run)
+            observed, text = _consume_bisync(running, run.id, log_path)
+            exit_code = running.wait()
+
+        if bisync.needs_resync(text):
+            # The workdir can be lost independently of what the database says, so
+            # rclone's own message is the source of truth.
+            job.bisync_initialized = False
+            session.commit()
+            _fail(
+                session,
+                run,
+                f"'{job.name}' needs a first sync before it can run again. Its "
+                "listing state is missing, which happens on a first run or if the "
+                "working directory was lost. Nothing was changed. Use First Sync "
+                "to rebuild it.",
+            )
+            _emit(run.id, "status", "Needs a first sync.")
+            return
+
+        deltas = bisync.parse_deltas(text)
+        if deltas.safety_abort:
+            _fail(
+                session,
+                run,
+                f"rclone refused this run: {deltas.safety_abort} Nothing was "
+                "changed. Check that both endpoints are fully mounted. If the "
+                "deletions are intended, raise the delete brake for this job.",
+            )
+            return
+
+        if run.is_resync and exit_code == 0:
+            job.bisync_initialized = True
+            session.commit()
+
+        _record_bisync(session, run, job, deltas, observed, exit_code, log_path)
+
+    def _bisync_preflight(
+        self, job: Job, prepared: rcloneconf.Prepared, path1: str, path2: str, workdir: str
+    ) -> None:
+        """Refuse before anything is written, using a bisync dry run."""
+        argv = bisync.build_bisync_command(
+            job, prepared, path1, path2, workdir=workdir, dry_run=True
+        )
+        result = process.run(
+            argv,
+            env=prepared.env,
+            redactor=prepared.redactor,
+            timeout_seconds=PLAN_TIMEOUT_SECONDS,
+            log_label="bisync --dry-run",
+        )
+        text = result.stdout + "\n" + result.stderr
+        if bisync.needs_resync(text):
+            # Handled by the caller after the real attempt; nothing to veto here.
+            return
+        deltas = bisync.parse_deltas(text)
+        if deltas.safety_abort:
+            raise BrakeEngaged(
+                f"rclone refused this run before making any change: "
+                f"{deltas.safety_abort} Check that both endpoints are fully "
+                "mounted. If the deletions are intended, raise the delete brake."
+            )
+
+    # ---------------------------------------------------------------- one way
+
+    def _execute_one_way(self, session: Session, run: JobRun, job: Job) -> None:
         # Always plan immediately before. A dry run from an hour ago cannot
         # notice a source that failed to mount five minutes ago, and that is
         # precisely the case the brake exists for.
@@ -340,6 +466,86 @@ def _record(
             "status": status.value,
             "transferred": len(copied),
             "deleted": len(deleted),
+        },
+    )
+
+
+def _consume_bisync(
+    running: process.StreamingProcess, run_id: int, log_path: Path
+) -> tuple[parsers.DryRunLog, str]:
+    """Read bisync output as it arrives, keeping the full text for delta parsing.
+
+    bisync reports its per-side summary in prose rather than the structured
+    `skipped` field a sync dry run uses, so the whole stream is retained.
+    """
+    observed = parsers.DryRunLog()
+    lines: list[str] = []
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with log_path.open("a", encoding="utf-8") as handle:
+        for line in running.lines():
+            handle.write(line + "\n")
+            lines.append(line)
+            _absorb(observed, line)
+            _emit(run_id, "line", line)
+    return observed, "\n".join(lines)
+
+
+def _record_bisync(
+    session: Session,
+    run: JobRun,
+    job: Job,
+    deltas: bisync.BisyncDeltas,
+    observed: parsers.DryRunLog,
+    exit_code: int,
+    log_path: Path,
+) -> None:
+    """Store the outcome of a bidirectional run, per side."""
+    cancelled = run.status == RunStatus.cancelled or exit_code in (-15, 143, -9, 137)
+    if cancelled:
+        status = RunStatus.cancelled
+    elif exit_code == 0:
+        status = RunStatus.success
+    else:
+        status = RunStatus.failed
+
+    run.status = status
+    run.finished_at = utcnow()
+    run.exit_code = exit_code
+    run.files_transferred = len(observed.copies)
+    run.files_deleted = len(observed.deletes)
+    run.bytes_transferred = sum(op.size or 0 for op in observed.copies)
+    run.errors_count = len(observed.errors)
+    run.log_path = str(log_path)
+    run.summary = {
+        "bidirectional": True,
+        "resync": run.is_resync,
+        "path1": {
+            "new": deltas.path1_new,
+            "modified": deltas.path1_modified,
+            "deleted": deltas.path1_deleted,
+        },
+        "path2": {
+            "new": deltas.path2_new,
+            "modified": deltas.path2_modified,
+            "deleted": deltas.path2_deleted,
+        },
+        "transferred": len(observed.copies),
+        "deleted": len(observed.deletes),
+        "errors": parsers.summarise_errors(observed.errors),
+        # A percentage for bisync, not a count. See app/engines/bisync.py.
+        "max_delete_pct": job.max_delete_pct,
+        "cancelled_partway": cancelled and bool(observed.copies or observed.deletes),
+    }
+    session.commit()
+    _emit(run.id, "done", f"{status.value}: {deltas.total_changes} changes reconciled.")
+    logger.info(
+        "Bidirectional run finished",
+        extra={
+            "run_id": run.id,
+            "job": job.name,
+            "status": status.value,
+            "resync": run.is_resync,
         },
     )
 

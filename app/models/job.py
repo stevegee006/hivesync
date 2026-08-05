@@ -193,7 +193,16 @@ class Job(Base, TimestampMixin):
     )
 
     # False until a successful bisync --resync. Never set implicitly by a run.
+    #
+    # Not sufficient on its own: the workdir holding bisync's listing state can be
+    # lost independently, and rclone then demands a resync regardless of what this
+    # says. rclone's own message is the source of truth, and seeing it clears this.
     bisync_initialized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Opt in to bisync's --check-access, which refuses to run unless matching
+    # RCLONE_TEST files exist on both sides. bisync's own stale mount guard, and
+    # unlike the sentinel of SPEC 6.4 it covers SMB and SFTP rather than only local.
+    check_access: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     runs: Mapped[list[JobRun]] = relationship(
         back_populates="job", cascade="all, delete-orphan", passive_deletes=True
@@ -226,6 +235,10 @@ class JobRun(Base):
     job: Mapped[Job] = relationship(back_populates="runs")
 
     trigger: Mapped[RunTrigger] = mapped_column(str_enum(RunTrigger, length=16), nullable=False)
+    # A bisync --resync rather than an ordinary run. Recorded because it is a
+    # different and more consequential operation: it makes one side match the
+    # other for any file that differs. SPEC section 10.1.
+    is_resync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     mode: Mapped[RunMode] = mapped_column(str_enum(RunMode, length=16), nullable=False)
     status: Mapped[RunStatus] = mapped_column(
         str_enum(RunStatus, length=16), nullable=False, default=RunStatus.queued

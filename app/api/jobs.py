@@ -26,6 +26,7 @@ from app.jobs import cron, planner
 from app.jobs.events import broker
 from app.models import (
     Connection,
+    Direction,
     FilterPreset,
     Job,
     JobRun,
@@ -67,6 +68,7 @@ _SCALARS = (
     "bwlimit",
     "max_delete_pct",
     "conflict_resolve",
+    "check_access",
     "schedule_cron",
     "timezone",
     "timeout_seconds",
@@ -377,6 +379,39 @@ def stream_run(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/jobs/{job_id}/resync", response_model=RunRead, status_code=status.HTTP_202_ACCEPTED)
+def resync_job(
+    job_id: int,
+    request: Request,
+    _user: CurrentUser,
+    session: Session = Depends(get_session),
+) -> RunRead:
+    """Explicitly rebuild bisync's listing state. SPEC section 10.1 and 10.3.
+
+    Never automatic, and never a side effect of an ordinary run: a resync makes
+    path2 match path1 for any file that differs, so it has to be a decision.
+    """
+    job = session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such job.")
+    if job.direction != Direction.bidirectional:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only a bidirectional job has listing state to rebuild.",
+        )
+
+    try:
+        run = planner.create_run(session, job, trigger=RunTrigger.api, mode=RunMode.live)
+    except planner.RunConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    run.is_resync = True
+    session.commit()
+    request.app.state.live_runner.submit(run.id)
+    logger.warning("Resync requested", extra={"job": job.name, "run_id": run.id})
+    return RunRead.model_validate(run)
 
 
 @router.get("/jobs/{job_id}/runs", response_model=list[RunRead])
