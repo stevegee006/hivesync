@@ -20,11 +20,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Pinned exactly, not ranged. These gate CI, and a range means the pipeline
+# resolves a different ruff than the developer ran, so a locally clean tree still
+# fails the build with rules that did not exist an hour earlier. Bumping them is
+# a deliberate commit that shows the new findings.
 dev = [
-    "pytest>=8.3,<9.0",
-    "pytest-asyncio>=0.24,<2.0",
-    "ruff>=0.8,<1.0",
-    "mypy>=1.13,<2.0",
+    "pytest==8.4.2",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.16.1",
+    "mypy==1.20.2",
 ]
 
 [build-system]

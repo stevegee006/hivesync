@@ -309,20 +309,20 @@ def test_run_records_the_plan(tree, env) -> None:
 def test_second_run_while_one_is_active_is_refused(tree, env) -> None:
     """SPEC 6.2, enforced by the database rather than by a prior SELECT."""
     src, dst = tree
-    settings, box, session = env
+    _settings, _box, session = env
     job = _job_over(session, src, dst)
     planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.dry_run)
     with pytest.raises(planner.RunConflict):
         planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.dry_run)
 
 
-def test_a_broken_job_fails_the_run_rather_than_the_process(env) -> None:
+def test_a_broken_job_fails_the_run_rather_than_the_process(env, tmp_path: Path) -> None:
     """An unreachable endpoint is a result to read, not a crashed worker."""
     settings, box, session = env
     source = Connection(
         name="nowhere", type=ConnectionType.sftp, host="203.0.113.1", port=22, base_path="/x"
     )
-    dest = Connection(name="local-dst", type=ConnectionType.local, base_path="/tmp")
+    dest = Connection(name="local-dst", type=ConnectionType.local, base_path=str(tmp_path / "dest"))
     session.add_all([source, dest])
     session.commit()
     job = Job(
