@@ -242,13 +242,24 @@
 {# Outside the form above: a form cannot be nested inside another form, and a
    browser silently drops the inner one. #}
 {% if job %}
-<form method="post" action="/jobs/{{ job.id }}/run" class="mt-3">
-  <button type="submit"
-          class="rounded border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-slate-500">
-    Dry run
-  </button>
-  <span class="ml-2 text-xs text-slate-500">Changes nothing on either endpoint.</span>
-</form>
+<div class="mt-3 flex flex-wrap items-center gap-3">
+  <form method="post" action="/jobs/{{ job.id }}/run">
+    <button type="submit"
+            class="rounded border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-slate-500">
+      Dry run
+    </button>
+  </form>
+  {# Confirmation gated and names the job, per SPEC section 6.4. A live run
+     plans first and refuses if the delete brake would be exceeded. #}
+  <form method="post" action="/jobs/{{ job.id }}/run-live"
+        onsubmit="return confirm('Run {{ job.name }} for real? This will copy files{% if job.delete_mode.value != 'none' %} and delete files from {{ job.dest_connection.name }}{% endif %}. It plans first and refuses if more than {{ job.max_delete_pct }}% of the destination would be deleted.');">
+    <button type="submit"
+            class="rounded border border-amber-700 px-3 py-1.5 text-sm text-amber-200 hover:border-amber-500">
+      Run live
+    </button>
+  </form>
+  <span class="text-xs text-slate-500">A dry run changes nothing on either endpoint.</span>
+</div>
 {% endif %}
 
 {% if job %}

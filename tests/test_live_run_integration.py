@@ -1,0 +1,324 @@
+"""M3's acceptance criteria, against real rclone.
+
+    a live run applies exactly the plan from M2, and a job whose source is
+    emptied is refused by the delete brake.
+
+The second half is the important one, and it is why the brake is two mechanisms.
+`--max-delete` on its own is an in-flight abort: verified against rclone 1.74.4,
+it deletes up to the threshold and then stops. A criterion that says "refused"
+needs the run to make no changes at all, which requires a pre-flight veto.
+
+    make test-integration
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+
+import pytest
+from sqlalchemy.orm import sessionmaker
+
+from app.crypto import SecretBox
+from app.db import create_db_engine
+from app.jobs import planner
+from app.jobs.runner import LiveRunner
+from app.models import (
+    CompareMode,
+    Connection,
+    ConnectionType,
+    DeleteMode,
+    Direction,
+    Job,
+    JobRun,
+    RunMode,
+    RunStatus,
+    RunTrigger,
+)
+from tests.conftest import create_schema, make_settings
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+def env(tmp_path: Path):
+    settings = make_settings(tmp_path / "config")
+    create_schema(settings)
+    factory = sessionmaker(bind=create_db_engine(settings))
+    return settings, SecretBox(settings.secret_key), factory, factory()
+
+
+def _tree(tmp_path: Path) -> tuple[Path, Path]:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "identical.txt").write_text("same\n", encoding="utf-8")
+    (dst / "identical.txt").write_text("same\n", encoding="utf-8")
+    (src / "changed.txt").write_text("the new contents\n", encoding="utf-8")
+    (dst / "changed.txt").write_text("old\n", encoding="utf-8")
+    (src / "new.txt").write_text("brand new\n", encoding="utf-8")
+    (dst / "deleted.txt").write_text("about to go\n", encoding="utf-8")
+    return src, dst
+
+
+def _job(session, src: Path, dst: Path, **overrides) -> Job:  # noqa: ANN003
+    source = Connection(name="live-src", type=ConnectionType.local, base_path=str(src))
+    dest = Connection(name="live-dst", type=ConnectionType.local, base_path=str(dst))
+    session.add_all([source, dest])
+    session.commit()
+    fields: dict = {
+        "name": "live-job",
+        "source_connection_id": source.id,
+        "source_path": "",
+        "dest_connection_id": dest.id,
+        "dest_path": "",
+        "direction": Direction.source_to_dest,
+        "compare_mode": CompareMode.mtime_size,
+        "delete_mode": DeleteMode.delete,
+        "max_delete_pct": 20,
+        "filters": {},
+    }
+    fields.update(overrides)
+    job = Job(**fields)
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+def _run(env, job: Job) -> JobRun:
+    settings, box, factory, session = env
+    run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+    LiveRunner(factory, box=box, settings=settings).run_now(run.id)
+    session.expire_all()
+    stored = session.get(JobRun, run.id)
+    assert stored is not None
+    return stored
+
+
+# --------------------------------------------------------------------------
+# Criterion: a live run applies exactly the plan
+# --------------------------------------------------------------------------
+
+
+def test_live_run_applies_exactly_the_plan(tmp_path: Path, env) -> None:
+    src, dst = _tree(tmp_path)
+    _settings, _box, _factory, session = env
+    run = _run(env, _job(session, src, dst))
+
+    assert run.status == RunStatus.success, run.summary
+    assert run.summary is not None
+    assert run.summary["applied_as_planned"] is True
+
+    # The plan said one new, one updated, one deleted.
+    assert run.summary["planned_new"] == 1
+    assert run.summary["planned_updated"] == 1
+    assert run.summary["planned_deleted"] == 1
+    assert run.files_transferred == 2
+    assert run.files_deleted == 1
+
+    # And the filesystem agrees.
+    assert (dst / "new.txt").read_text(encoding="utf-8") == "brand new\n"
+    assert (dst / "changed.txt").read_text(encoding="utf-8") == "the new contents\n"
+    assert not (dst / "deleted.txt").exists()
+    assert (dst / "identical.txt").read_text(encoding="utf-8") == "same\n"
+
+
+def test_copy_only_job_never_deletes(tmp_path: Path, env) -> None:
+    """Without delete_mode the command is a copy, so extra files simply stay."""
+    src, dst = _tree(tmp_path)
+    _settings, _box, _factory, session = env
+    run = _run(env, _job(session, src, dst, delete_mode=DeleteMode.none))
+
+    assert run.status == RunStatus.success
+    assert run.files_deleted == 0
+    assert (dst / "deleted.txt").exists(), "a copy must not remove anything"
+    assert (dst / "new.txt").exists()
+
+
+def test_the_run_records_a_redacted_command(tmp_path: Path, env) -> None:
+    src, dst = _tree(tmp_path)
+    _settings, _box, _factory, session = env
+    run = _run(env, _job(session, src, dst))
+    assert run.command_redacted is not None
+    assert "--max-delete" in run.command_redacted
+
+
+def test_a_log_file_is_written(tmp_path: Path, env) -> None:
+    """SPEC section 16: per-run logs under /config/logs/<job-id>/<run-id>.log."""
+    src, dst = _tree(tmp_path)
+    _settings, _box, _factory, session = env
+    run = _run(env, _job(session, src, dst))
+    assert run.log_path is not None
+    log = Path(run.log_path)
+    assert log.is_file()
+    assert log.read_text(encoding="utf-8").strip()
+
+
+# --------------------------------------------------------------------------
+# Criterion: an emptied source is refused by the delete brake
+# --------------------------------------------------------------------------
+
+
+def test_emptied_source_is_refused_and_changes_nothing(tmp_path: Path, env) -> None:
+    """The heart of M3, and the reason the brake needs a pre-flight veto.
+
+    --max-delete alone would delete up to the threshold and then abort. Refusal
+    means nothing is removed at all.
+    """
+    _settings, _box, _factory, session = env
+    src = tmp_path / "empty-src"
+    dst = tmp_path / "full-dst"
+    src.mkdir()
+    dst.mkdir()
+    for index in range(10):
+        (dst / f"file{index}.txt").write_text("valuable\n", encoding="utf-8")
+
+    run = _run(env, _job(session, src, dst, max_delete_pct=20))
+
+    assert run.status == RunStatus.failed
+    assert run.summary is not None
+    message = run.summary["error"]
+    assert "delete brake" in message
+    assert "Nothing was changed" in message
+
+    # Every single file survives. Not "most of them".
+    survivors = sorted(path.name for path in dst.iterdir())
+    assert len(survivors) == 10
+    assert run.files_deleted == 0
+
+
+def test_deletions_within_the_brake_are_allowed(tmp_path: Path, env) -> None:
+    """The brake must not block ordinary work: 1 of 10 against a 20% limit."""
+    _settings, _box, _factory, session = env
+    src = tmp_path / "s"
+    dst = tmp_path / "d"
+    src.mkdir()
+    dst.mkdir()
+    for index in range(9):
+        (src / f"keep{index}.txt").write_text("keep\n", encoding="utf-8")
+        (dst / f"keep{index}.txt").write_text("keep\n", encoding="utf-8")
+    (dst / "gone.txt").write_text("gone\n", encoding="utf-8")
+
+    run = _run(env, _job(session, src, dst, max_delete_pct=20))
+    assert run.status == RunStatus.success, run.summary
+    assert run.files_deleted == 1
+    assert not (dst / "gone.txt").exists()
+
+
+def test_missing_sentinel_refuses_before_touching_anything(tmp_path: Path, env) -> None:
+    """SPEC 6.4. A stale mount presents as an empty directory, which is
+    indistinguishable from 'delete everything'. Re-checked at run time rather
+    than trusted from the last connection test."""
+    _settings, _box, _factory, session = env
+    src = tmp_path / "stale-mount"
+    dst = tmp_path / "dest"
+    src.mkdir()
+    dst.mkdir()
+    (dst / "precious.txt").write_text("do not delete\n", encoding="utf-8")
+
+    job = _job(session, src, dst)
+    job.source_connection.sentinel_file = ".hivesync-mounted"
+    session.commit()
+
+    run = _run(env, job)
+    assert run.status == RunStatus.failed
+    assert "sentinel" in run.summary["error"]
+    assert (dst / "precious.txt").exists()
+
+
+def test_present_sentinel_allows_the_run(tmp_path: Path, env) -> None:
+    _settings, _box, _factory, session = env
+    src = tmp_path / "mounted"
+    dst = tmp_path / "dest2"
+    src.mkdir()
+    dst.mkdir()
+    (src / ".hivesync-mounted").write_text("", encoding="utf-8")
+    (src / "data.txt").write_text("real\n", encoding="utf-8")
+
+    job = _job(session, src, dst, max_delete_pct=100)
+    job.source_connection.sentinel_file = ".hivesync-mounted"
+    session.commit()
+
+    run = _run(env, job)
+    assert run.status == RunStatus.success, run.summary
+    assert (dst / "data.txt").exists()
+
+
+def test_brake_flag_is_present_even_on_a_permitted_run(tmp_path: Path, env) -> None:
+    """Invariant 7: no live sync runs without --max-delete, whatever the outcome."""
+    src, dst = _tree(tmp_path)
+    _settings, _box, _factory, session = env
+    run = _run(env, _job(session, src, dst, max_delete_pct=100))
+    assert run.command_redacted is not None
+    assert "--max-delete" in run.command_redacted
+
+
+# --------------------------------------------------------------------------
+# Cancellation
+# --------------------------------------------------------------------------
+
+
+def test_cancel_stops_the_run_and_records_what_was_done(tmp_path: Path, env) -> None:
+    """A cancelled sync reports the work it completed, not nothing. The next
+    run's brake reads the resulting state, so pretending otherwise would mislead
+    the thing protecting the destination."""
+    settings, box, factory, session = env
+    src = tmp_path / "big-src"
+    dst = tmp_path / "big-dst"
+    src.mkdir()
+    dst.mkdir()
+    # Large enough, and rate limited, that the transfer is still going when the
+    # cancel lands.
+    for index in range(4):
+        (src / f"big{index}.bin").write_bytes(b"x" * 8_000_000)
+
+    job = _job(session, src, dst, bwlimit="2M", max_delete_pct=100)
+    run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+    runner = LiveRunner(factory, box=box, settings=settings)
+
+    def cancel_shortly() -> None:
+        time.sleep(6)
+        runner.cancel(run.id)
+
+    timer = threading.Thread(target=cancel_shortly, daemon=True)
+    timer.start()
+    runner.run_now(run.id)
+    timer.join(timeout=5)
+
+    session.expire_all()
+    stored = session.get(JobRun, run.id)
+    assert stored is not None
+    assert stored.status == RunStatus.cancelled, stored.summary
+
+    # Verified against rclone: SIGTERM removes the partial file it was writing,
+    # so nothing half-written is left under a final name.
+    partials = list(dst.glob("*.partial"))
+    assert not partials, f"a cancelled transfer left partial files: {partials}"
+    for path in dst.iterdir():
+        assert path.stat().st_size == 8_000_000, f"{path.name} is truncated"
+
+
+def test_cancelling_a_finished_run_is_a_no_op(tmp_path: Path, env) -> None:
+    settings, box, factory, session = env
+    src, dst = _tree(tmp_path)
+    run = _run(env, _job(session, src, dst))
+    assert run.status == RunStatus.success
+    assert LiveRunner(factory, box=box, settings=settings).cancel(run.id) is False
+
+
+# --------------------------------------------------------------------------
+# Concurrency
+# --------------------------------------------------------------------------
+
+
+def test_only_one_run_per_job_at_a_time(tmp_path: Path, env) -> None:
+    """SPEC 6.2, enforced by the database rather than by a prior SELECT."""
+    src, dst = _tree(tmp_path)
+    _settings, _box, _factory, session = env
+    job = _job(session, src, dst)
+    planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+    with pytest.raises(planner.RunConflict):
+        planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)

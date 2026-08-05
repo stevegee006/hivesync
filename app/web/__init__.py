@@ -46,6 +46,7 @@ from app.models import (
     JobRunChange,
     RcloneMode,
     RunMode,
+    RunStatus,
     RunTrigger,
 )
 from app.schemas.connection import ConnectionCreate
@@ -739,6 +740,40 @@ def run_job_form(job_id: int, request: Request, session: Session = Depends(get_s
 
     request.app.state.plan_runner.submit(run.id)
     return RedirectResponse(url=f"/runs/{run.id}", status_code=303)
+
+
+@router.post("/jobs/{job_id}/run-live", response_class=HTMLResponse)
+def run_job_live_form(
+    job_id: int, request: Request, session: Session = Depends(get_session)
+) -> Any:
+    """Start a live run. It plans first and refuses before changing anything if
+    the delete brake would be exceeded. See jobs.runner."""
+    security.require_user(request, session)
+    job = session.get(Job, job_id)
+    if job is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+    try:
+        run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+    except planner.RunConflict:
+        existing = next(iter(planner.latest_runs(session, job.id, limit=1)), None)
+        destination = f"/runs/{existing.id}" if existing else f"/jobs/{job.id}"
+        return RedirectResponse(url=destination, status_code=303)
+
+    request.app.state.live_runner.submit(run.id)
+    return RedirectResponse(url=f"/runs/{run.id}", status_code=303)
+
+
+@router.post("/runs/{run_id}/cancel", response_class=HTMLResponse)
+def cancel_run_form(run_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
+    security.require_user(request, session)
+    run = session.get(JobRun, run_id)
+    if run is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+    if run.status in (RunStatus.queued, RunStatus.running):
+        run.status = RunStatus.cancelled
+        session.commit()
+        request.app.state.live_runner.cancel(run_id)
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 
 @router.get("/runs/{run_id}", response_class=HTMLResponse)

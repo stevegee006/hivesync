@@ -12,8 +12,8 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | M2 |
-| Milestones complete | M0, M1 |
+| Milestone in progress | M3 |
+| Milestones complete | M0, M1, M2 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
@@ -208,6 +208,8 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, windows, a bind mounted `/config` reports mode 777 regardless of the chown in the entrypoint, because Docker Desktop's filesystem does not carry POSIX modes. Do not write a permission assertion that expects otherwise on Windows.
 - 2026-08-05, docker, `docker buildx ls` advertising `linux/arm64` does not mean arm64 builds work. Docker Desktop lists the platform but ships no binfmt handlers, so an arm64 stage dies with `exec format error`. Fix with `docker run --privileged --rm tonistiigi/binfmt --install arm64`, or build amd64 only, or let the GitHub Actions workflow do it (`docker/setup-qemu-action` handles this).
 - 2026-08-05, docker, `auths` keys present in `~/.docker/config.json` do **not** mean you are logged in. Docker Desktop leaves those keys behind when logged out, with the real tokens in an external credential store. Check with `docker info | grep -i username`, which prints nothing when unauthenticated.
+- 2026-08-05, ci, **the dev toolchain must be pinned exactly.** With `ruff>=0.8,<1.0` the pipeline resolved a newer ruff than the developer venv and failed a locally clean tree on rules that did not exist when the code was written. Bumping a pinned tool is a deliberate commit that shows the new findings.
+- 2026-08-05, process, **check CI after the commit that ends a milestone, not before.** M1 was reported complete on the strength of a run from earlier in the milestone; the commit that actually finished it turned the pipeline red and stayed red for two more commits.
 - 2026-08-05, docker, **a stage appended after `runtime` becomes the default build target**, so a plain `docker build .` silently produced an image whose entrypoint was pytest, and the container restart-looped running tests. The test image lives in `Dockerfile.test` for that reason, and compose pins `target: runtime` as well. Never append a stage after runtime.
 - 2026-08-05, ux, "these endpoints share no hash type" and "nobody has probed these endpoints" are different statements. Emitting the first when the second is true sends the reader off debugging the wrong problem. `capabilities.intersect` distinguishes them and so must anything else that reports on capabilities.
 - 2026-08-05, tooling, never pipe a build or test command into `tail` when the exit code matters: the pipeline returns tail's status and a failure reports as success. Redirect to a file and check `$?`, or use `PIPESTATUS`.
@@ -228,6 +230,43 @@ FTP and SMB fixtures, ruff and mypy clean.
 Remaining for M1: nothing blocking. The connection editor, credentials page,
 directory browser and compatibility page are built; the job editor that will
 consume the intersection logic belongs to a later milestone.
+
+### M3 live sync design
+
+**The delete brake is two mechanisms.** SPEC 6.4 and invariant 7 describe
+`--max-delete` as the brake, but verified against rclone 1.74.4 the flag is an
+**in-flight abort**: it deletes up to the threshold and then stops with exit 7.
+M3's criterion says an emptied source is *refused*, which means nothing is
+removed at all. So:
+
+1. **Pre-flight veto.** A live run plans immediately before executing and refuses
+   before rclone is invoked if the plan exceeds the brake. This is what makes the
+   criterion true. It also re-checks the sentinel file rather than trusting the
+   last connection test, since a mount healthy an hour ago is exactly the failure
+   SPEC 6.4 is about.
+2. **The flag, always.** Still passed on every live sync, so a tree that changed
+   between planning and executing cannot run away. Invariant 7 holds literally.
+
+Planning before every live run is deliberate. A dry run from an hour ago cannot
+notice a source that failed to mount five minutes ago.
+
+**Cancellation.** SIGTERM, ten seconds, then SIGKILL. Verified: on SIGTERM rclone
+logs `Removing failed copy` and deletes the `<name>.<id>.partial` it was writing,
+so a cancelled transfer leaves nothing half-written under a final name. **A
+SIGKILL skips that handler and does leave a `.partial` behind**, which the next
+sync would see as an extra file on the destination and count against the brake.
+The grace period is functional, not polite.
+
+A cancelled run records the work it actually completed, parsed from the stream as
+it arrives. Reporting nothing would mislead the next run's brake, which reads the
+resulting state.
+
+**Live output** goes through an in-process broker (`app/jobs/events.py`), not the
+database. An SSE stream stays open for the length of a sync, and holding a SQLite
+session that long blocks writers.
+
+`copy` is used instead of `sync` when `delete_mode` is none, so a copy-only job
+has no code path that can remove anything.
 
 ### M2 dry run design, verified against rclone 1.74.4
 

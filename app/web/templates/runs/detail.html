@@ -20,9 +20,54 @@
 </div>
 
 {% if run.status.value in ('queued', 'running') %}
-<div class="mt-6 rounded border border-slate-700 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
-  {{ 'Waiting to start' if run.status.value == 'queued' else 'Planning' }}. Nothing is
-  being changed: this run only reports what would happen.
+<div class="mt-6 rounded border border-slate-700 bg-slate-900/60 px-4 py-3">
+  <div class="flex items-center justify-between">
+    <p class="text-sm text-slate-300">
+      {% if run.mode.value == 'dry_run' %}
+        {{ 'Waiting to start' if run.status.value == 'queued' else 'Planning' }}.
+        Nothing is being changed: this run only reports what would happen.
+      {% else %}
+        {{ 'Waiting to start' if run.status.value == 'queued' else 'Running' }}.
+        It plans first and refuses before changing anything if the delete brake
+        would be exceeded.
+      {% endif %}
+    </p>
+    <form method="post" action="/runs/{{ run.id }}/cancel"
+          onsubmit="return confirm('Stop this run? Work already completed stays done, and rclone removes the file it is part way through writing.');">
+      <button type="submit" class="text-xs text-amber-400 hover:text-amber-300">Cancel</button>
+    </form>
+  </div>
+
+  {# Live output over SSE. Falls back to the polling below when EventSource is
+     unavailable, so the page still progresses without JavaScript. #}
+  <pre id="tail" class="mt-3 max-h-64 overflow-y-auto rounded bg-slate-950 p-2 font-mono text-xs text-slate-400"></pre>
+  <script>
+    (function () {
+      var pane = document.getElementById("tail");
+      if (!pane || typeof EventSource === "undefined") return;
+      var source = new EventSource("/api/runs/{{ run.id }}/stream");
+      source.onmessage = function (event) {
+        var payload = JSON.parse(event.data);
+        if (payload.kind === "ping") return;
+        pane.textContent += payload.text + "\n";
+        pane.scrollTop = pane.scrollHeight;
+        if (payload.kind === "done") { source.close(); window.location.reload(); }
+      };
+      source.onerror = function () { source.close(); };
+    })();
+  </script>
+</div>
+
+{% elif run.status.value == 'cancelled' %}
+<div class="mt-6 rounded border border-amber-800 bg-amber-950/40 px-4 py-3 text-sm text-amber-100">
+  Cancelled.
+  {% set summary = run.summary or {} %}
+  {% if summary.get('cancelled_partway') %}
+  {{ run.files_transferred }} files were already transferred and
+  {{ run.files_deleted }} deleted before it stopped. Nothing was left half written.
+  {% else %}
+  Nothing had been changed yet.
+  {% endif %}
 </div>
 
 {% elif run.status.value == 'failed' %}
