@@ -11,8 +11,12 @@
      click through the one prompt that matters. #}
   <div class="mt-3 rounded border border-amber-800 bg-amber-950/50 px-3 py-3">
     <p class="text-xs text-amber-100">{{ test.host_key.prompt }}</p>
-    <p class="mt-2 font-mono text-xs break-all text-amber-200">
-      {{ test.host_key.fingerprint }}
+    {% for fingerprint in (test.host_key.fingerprints or [test.host_key.fingerprint]) %}
+    <p class="mt-2 font-mono text-xs break-all text-amber-200">{{ fingerprint }}</p>
+    {% endfor %}
+    <p class="mt-1 text-xs text-amber-300/70">
+      All of the keys this server offers are pinned together, because the client
+      negotiates whichever one it prefers.
     </p>
     <form method="post" action="/connections/{{ connection.id }}/trust-host-key"
           class="mt-3 flex items-center gap-2">
@@ -69,11 +73,11 @@
   {% endif %}
 </div>
 
-{% elif connection and connection.host_key_fingerprint %}
+{% elif connection and connection.host_keys_trusted %}
 <div class="rounded border border-slate-800 bg-slate-900/50 px-4 py-3">
-  <p class="text-xs text-slate-500">Pinned SSH host key</p>
+  <p class="text-xs text-slate-500">Pinned SSH host keys</p>
   <p class="mt-1 font-mono text-xs break-all text-slate-300">
-    {{ connection.host_key_fingerprint }}
+    {{ connection.host_keys }}
   </p>
   <form method="post" action="/connections/{{ connection.id }}/forget-host-key" class="mt-2">
     <button type="submit" class="text-xs text-amber-400 hover:text-amber-300">

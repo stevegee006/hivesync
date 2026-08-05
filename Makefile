@@ -61,12 +61,24 @@ dev:
 test:
 	$(PYTHON) -m pytest -m "not integration"
 
+# Runs inside the image, on the fixture network, so the tests use the pinned
+# rclone rather than whatever is on the host PATH. The host does not need rclone
+# or even Python for this target.
 .PHONY: test-integration
-test-integration:
-	docker compose -f docker-compose.test.yml up -d --wait
-	$(PYTHON) -m pytest -m integration; status=$$?; \
+test-integration: test-image
+	docker compose -f docker-compose.test.yml up -d
+	docker run --rm \
+		--network hivesync-test_default \
+		-v "$(CURDIR)":/src -w /src \
+		-e HIVESYNC_SECRET_KEY=$$($(PYTHON) -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())" 2>/dev/null || echo "") \
+		$(IMAGE_NAME):test pytest -m integration -q; \
+		status=$$?; \
 		docker compose -f docker-compose.test.yml down -v; \
 		exit $$status
+
+.PHONY: test-image
+test-image:
+	docker build --target test $(BUILD_ARGS) -t $(IMAGE_NAME):test .
 
 .PHONY: lint
 lint:

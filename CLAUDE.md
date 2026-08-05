@@ -12,7 +12,7 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | M1 not started |
+| Milestone in progress | M1 |
 | Milestones complete | M0 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
@@ -186,6 +186,15 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, docker, `python:3.12-slim` already carries `setpriv` (util-linux) and `usermod`/`groupmod` (passwd), so PUID/PGID remapping needs no `gosu` download. The Dockerfile asserts this with `command -v` so a wrong assumption fails the build rather than the container start.
 - 2026-08-05, windows, `docker/entrypoint.sh` must be LF. A CRLF in the shebang kills the container with an opaque error. Enforced by `.gitattributes`.
 - 2026-08-05, tailwind, the standalone CLI is a single Go binary, which is how "Tailwind with no Node build step" is satisfied. Tailwind publishes no checksum file for these assets, so there is no digest to pin.
+- 2026-08-05, openssh, **OpenSSH 9.8 PerSourcePenalties throttles sources that connect without authenticating, and `ssh-keyscan` does exactly that.** Measured against the fixture: 4 scans succeed, the next 8 return nothing, and sshd logs `drop connection ... penalty: connections without attempting authentication`. Host key trust therefore scans **once**, records the keys as untrusted, and approves from that record with no second scan. Never add a re-scan to the approval path. The user-facing failure message says to wait a minute.
+- 2026-08-05, sftp, **SFTP hash support is a property of the server, not the protocol.** SPEC 11.1 lists md5 and sha1 for SFTP, but rclone detects them by running `md5sum` and `sha1sum` over a shell. A chroot SFTP-only server such as `atmoz/sftp` has no shell and reports no hashes at all. Do not assume SFTP means checksums are available; this is precisely why the runtime probe exists.
+- 2026-08-05, sftp, a server usually offers several host keys (here ssh-rsa and ssh-ed25519) and the client negotiates one. Pin all of them. Pinning only the first silently forces whichever algorithm `ssh-keyscan` happened to list first, and breaks when the server stops offering it. A single RSA entry also exceeds `String(255)`, so the column is Text.
+- 2026-08-05, python, `subprocess.run(env=...)` **replaces** the environment rather than extending it, so passing only the `RCLONE_CONFIG_*` vars wiped PATH and rclone stopped being findable. Always overlay onto `os.environ`, which also keeps `RCLONE_CONFIG_PASS` reaching rclone.
+- 2026-08-05, sqlalchemy, SQLite hands back **naive** datetimes even from `DateTime(timezone=True)`, so any comparison with an aware `utcnow()` raises. Fixed with the `UtcDateTime` decorator in models/base.py. Use it for every timestamp column.
+- 2026-08-05, pydantic, a response model field must not share a name with an ORM attribute of a different shape. `ConnectionRead.capabilities` is a digest while `Connection.capabilities` is the raw probe payload, and `model_validate` fed one into the other. It only failed once a connection had been probed, so it passed every test written before the first successful test.
+- 2026-08-05, alembic, `env.py` must call `fileConfig(..., disable_existing_loggers=False)`. The default is True, which switches off every application logger in-process, and the symptom is log lines silently not appearing.
+- 2026-08-05, fastapi, enforce auth as a **dependency**, not a call inside the handler. Inside the handler, body validation runs first, so an unauthenticated caller gets a 422 describing a payload they were never entitled to submit.
+- 2026-08-05, docker, never set `container_name` in a compose file. It is global to the daemon, so a leftover container from another project blocks the whole stack from starting.
 - 2026-08-05, starlette, `HTTP_422_UNPROCESSABLE_ENTITY` is deprecated in favour of `..._CONTENT`. `app/api/auth.py` uses a local literal so it works across versions.
 - 2026-08-05, lftp, Debian trixie ships **4.9.2**, not 4.9.3. Confirmed in the built image. Do not assume a version, read it with `make pin-versions`.
 - 2026-08-05, docker, there is deliberately no `USER` directive in the Dockerfile: the entrypoint needs root to apply PUID/PGID before dropping via setpriv. Consequence: `docker exec` lands as root even though PID 1 is uid 1000. Check the app's identity with `cat /proc/1/status`, not `docker exec id`. This is the standard PUID/PGID image tradeoff.
@@ -195,6 +204,23 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, docker, `docker buildx ls` advertising `linux/arm64` does not mean arm64 builds work. Docker Desktop lists the platform but ships no binfmt handlers, so an arm64 stage dies with `exec format error`. Fix with `docker run --privileged --rm tonistiigi/binfmt --install arm64`, or build amd64 only, or let the GitHub Actions workflow do it (`docker/setup-qemu-action` handles this).
 - 2026-08-05, docker, `auths` keys present in `~/.docker/config.json` do **not** mean you are logged in. Docker Desktop leaves those keys behind when logged out, with the real tokens in an external credential store. Check with `docker info | grep -i username`, which prints nothing when unauthenticated.
 - 2026-08-05, tooling, never pipe a build or test command into `tail` when the exit code matters: the pipeline returns tail's status and a failure reports as success. Redirect to a file and check `$?`, or use `PIPESTATUS`.
+
+### M1 acceptance status, verified 2026-08-05
+
+All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,
+FTP and SMB fixtures, ruff and mypy clean.
+
+1. SFTP, FTP and SMB each test green against the fixtures.
+2. A remote defined only in the mounted rclone.conf is listed, tested and browsed,
+   with zero Credential rows written and the user's file left byte-identical.
+3. No plaintext secret in any database text column, anywhere under /config, or in
+   any log record. Swept by tests/test_redaction_sweep.py.
+4. A hash-less backend disables checksum comparison with a visible reason, checked
+   both on fixtures and against capabilities read from the live endpoints.
+
+Remaining for M1: nothing blocking. The connection editor, credentials page,
+directory browser and compatibility page are built; the job editor that will
+consume the intersection logic belongs to a later milestone.
 
 ### Verified against rclone 1.74.4 in the built image, 2026-08-05
 

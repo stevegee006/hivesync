@@ -339,7 +339,9 @@ def test_corrupt_backend_secret_gives_an_actionable_error(
 
 def test_pinned_host_key_becomes_a_known_hosts_file(box: SecretBox, settings: Settings) -> None:
     """rclone validates host keys only when known_hosts_file is set."""
-    connection = _sftp(box, host_key_fingerprint="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA")
+    connection = _sftp(
+        box, host_keys="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA", host_keys_trusted=True
+    )
     with rcloneconf.prepare({ALIAS_SOURCE: connection}, box=box, settings=settings) as prepared:
         path = Path(prepared.env["RCLONE_CONFIG_HS_SRC_KNOWN_HOSTS_FILE"])
         assert path.is_file()
@@ -352,6 +354,16 @@ def test_pinned_host_key_becomes_a_known_hosts_file(box: SecretBox, settings: Se
 
 def test_no_known_hosts_file_when_nothing_is_pinned(box: SecretBox, settings: Settings) -> None:
     with rcloneconf.prepare({ALIAS_SOURCE: _sftp(box)}, box=box, settings=settings) as prepared:
+        assert "RCLONE_CONFIG_HS_SRC_KNOWN_HOSTS_FILE" not in prepared.env
+
+
+def test_recorded_but_unapproved_keys_are_not_honoured(box: SecretBox, settings: Settings) -> None:
+    """Scanned is not trusted. Validating against keys no human confirmed is the
+    same as not validating at all."""
+    connection = _sftp(
+        box, host_keys="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA", host_keys_trusted=False
+    )
+    with rcloneconf.prepare({ALIAS_SOURCE: connection}, box=box, settings=settings) as prepared:
         assert "RCLONE_CONFIG_HS_SRC_KNOWN_HOSTS_FILE" not in prepared.env
 
 

@@ -215,25 +215,69 @@ def check_reachable(prepared: Prepared, alias: str) -> process.CommandResult:
     )
 
 
-def scan_host_key(host: str, port: int) -> tuple[str, str] | None:
-    """Fetch a host's SSH key with ssh-keyscan, for trust on first use.
+@dataclass(frozen=True)
+class HostKey:
+    """One SSH host key offered by a server. Public material, not a secret."""
 
-    Returns (key_type_and_value, sha256_fingerprint) or None if unreachable.
-    The value returned is a public key. It is not secret, and it is what gets
-    pinned on the connection and written into a known_hosts file at run time.
+    key_type: str
+    entry: str  # "type base64", the known_hosts form minus the host prefix
+    fingerprint: str  # "type SHA256:..." as OpenSSH displays it
+
+
+# Strongest first, so the fingerprint shown for review is the one a human is most
+# likely to be able to compare against the server's own records.
+_KEY_TYPE_PREFERENCE = ("ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa")
+
+
+def scan_host_keys(host: str, port: int) -> list[HostKey]:
+    """Fetch every SSH host key a server offers, for trust on first use.
+
+    All of them are returned, and all of them get pinned. A server commonly
+    offers both RSA and Ed25519 and the client negotiates one; pinning only the
+    first would force whichever algorithm ssh-keyscan happened to list first and
+    break when the server stops offering it.
     """
     result = process.run(
         ["ssh-keyscan", "-p", str(port), "-T", "10", host],
         timeout_seconds=20,
         log_label="ssh-keyscan",
     )
+    keys: list[HostKey] = []
     for line in result.stdout.splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
         parts = line.split()
-        # Format: host keytype base64key
-        if len(parts) >= 3 and not line.startswith("#"):
-            key = f"{parts[1]} {parts[2]}"
-            return key, _fingerprint(parts[1], parts[2])
-    return None
+        # ssh-keyscan format: host keytype base64key
+        if len(parts) < 3:
+            continue
+        key_type, key_b64 = parts[1], parts[2]
+        keys.append(
+            HostKey(
+                key_type=key_type,
+                entry=f"{key_type} {key_b64}",
+                fingerprint=_fingerprint(key_type, key_b64),
+            )
+        )
+
+    def rank(key: HostKey) -> int:
+        try:
+            return _KEY_TYPE_PREFERENCE.index(key.key_type)
+        except ValueError:
+            return len(_KEY_TYPE_PREFERENCE)
+
+    keys.sort(key=rank)
+    return keys
+
+
+def fingerprints_of(entries: str) -> list[str]:
+    """Fingerprints for stored known_hosts entries, for display and for matching
+    an approval against what was shown. No network access."""
+    result: list[str] = []
+    for line in (entries or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            result.append(_fingerprint(parts[0], parts[1]))
+    return result
 
 
 def _fingerprint(key_type: str, key_b64: str) -> str:

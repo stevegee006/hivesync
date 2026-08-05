@@ -244,7 +244,11 @@ def test_connection(
         message=outcome.message,
         capabilities=capability_summary(connection),
         host_key=(
-            HostKeyPrompt(fingerprint=outcome.host_key.fingerprint, prompt=outcome.host_key.prompt)
+            HostKeyPrompt(
+                fingerprint=outcome.host_key.fingerprint,
+                fingerprints=outcome.host_key.fingerprints,
+                prompt=outcome.host_key.prompt,
+            )
             if outcome.host_key
             else None
         ),
@@ -283,7 +287,8 @@ def forget_host_key(
 ) -> ConnectionRead:
     """Unpin a host key, for a legitimately rebuilt server."""
     connection = _get_or_404(session, connection_id)
-    connection.host_key_fingerprint = None
+    connection.host_keys = None
+    connection.host_keys_trusted = False
     session.commit()
     logger.warning("Cleared pinned SSH host key", extra={"connection": connection.name})
     return to_read(connection, request)

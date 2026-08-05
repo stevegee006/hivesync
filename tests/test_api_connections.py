@@ -333,12 +333,14 @@ def test_forget_host_key_clears_it(authed_client: TestClient, app_settings_path:
     session = sessionmaker(bind=create_db_engine(settings))()
     connection = session.get(Connection, created["id"])
     assert connection is not None
-    connection.host_key_fingerprint = "ssh-ed25519 AAAAC3Nz"
+    connection.host_keys = "ssh-ed25519 AAAAC3Nz"
+    connection.host_keys_trusted = True
     session.commit()
 
     response = authed_client.delete(f"/api/connections/{created['id']}/host-key")
     assert response.status_code == 200
-    assert response.json()["host_key_fingerprint"] is None
+    assert response.json()["host_keys"] is None
+    assert response.json()["host_keys_trusted"] is False
 
 
 # --------------------------------------------------------------------------

@@ -1,14 +1,20 @@
 # Integration test fixtures, per SPEC section 17.
 #
-# Not used at M0: nothing connects to these yet. They are declared now so the
-# connections milestone starts from a working set of endpoints rather than
-# inventing them at the same time as the code that talks to them.
+# Brought up by `make test-integration`, which runs pytest in a container on this
+# same network so the tests reach the fixtures by service name. rclone is not
+# installed on a developer workstation, and the tests need the pinned binary
+# rather than whatever happens to be on PATH.
 #
-# Bring up with `make test-integration`.
+# Verified working against rclone 1.74.4 on 2026-08-05: SFTP, FTP and SMB all
+# list successfully.
+# No container_name anywhere: an explicit name is global to the daemon, so it
+# collides with any leftover container of the same name from another project
+# and blocks the whole stack from starting. Compose derives names instead.
+name: hivesync-test
+
 services:
   sftp:
     image: atmoz/sftp:alpine
-    container_name: hivesync-test-sftp
     ports:
       - "2222:22"
     # user:password:uid:gid:relative_home_directory
@@ -16,22 +22,26 @@ services:
 
   ftp:
     image: delfer/alpine-ftp-server:latest
-    container_name: hivesync-test-ftp
     ports:
       - "2121:21"
       - "21000-21010:21000-21010"
     environment:
       USERS: "testuser|testpass|/ftp/testuser"
-      ADDRESS: localhost
+      # Must be the address the *client* will use to reach passive data ports.
+      # "localhost" works only from the host; from a sibling container the PASV
+      # reply has to name this service, or every data transfer hangs.
+      ADDRESS: ftp
+      MIN_PORT: 21000
+      MAX_PORT: 21010
 
   smb:
     image: dperson/samba:latest
-    container_name: hivesync-test-smb
     ports:
       - "1445:445"
     environment:
       USERID: 1000
       GROUPID: 1000
+    # -p sets permissions on the share path, -S disables the SMB1 fallback.
     command: >
       -u "testuser;testpass"
       -s "testshare;/share;yes;no;no;testuser"

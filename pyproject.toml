@@ -63,7 +63,9 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header"]
 [tool.ruff.lint.per-file-ignores]
 # Asserts are the point of tests, and the credential-shaped literals in them are
 # fixtures. The real check that no secret escapes is tests/test_crypto.py.
-"tests/*" = ["S101", "S105", "S106", "S107", "ANN201"]
+# ANN001/ANN201: pytest fixtures are passed by name and their types add noise
+# without adding safety, since mypy does not check the test tree anyway.
+"tests/*" = ["S101", "S105", "S106", "S107", "ANN001", "ANN201"]
 "migrations/*" = ["ANN", "E501"]         # generated-style migration bodies
 # S105 flags string literals whose name looks credential-like. In these three the
 # literal is an identifier: an enum member describing a credential kind, or a
@@ -84,6 +86,10 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The repo root, so `app` and `tests` import without the project being installed.
+# On a workstation the editable install already provides this; inside the test
+# container it does not, and the integration suite runs there.
+pythonpath = ["."]
 addopts = "-q --strict-markers"
 markers = [
     "integration: requires docker-compose.test.yml fixtures",

@@ -262,16 +262,27 @@ def _extra_opts_env(connection: Connection, alias: str, env: dict[str, str]) -> 
         env[env_var_name(alias, str(key))] = str(value)
 
 
-def _known_hosts_line(connection: Connection) -> str | None:
-    """The pinned host key, in known_hosts format, or None if nothing is pinned."""
-    fingerprint = (connection.host_key_fingerprint or "").strip()
-    if not fingerprint:
+def known_hosts_content(connection: Connection) -> str | None:
+    """The pinned host keys as a known_hosts file body, or None if none are pinned.
+
+    Every stored key is written. The client negotiates one of them, so pinning
+    only a single algorithm would break as soon as the server stopped offering it.
+    """
+    if not connection.host_keys_trusted:
+        # Scanned but not approved. Writing them would validate against keys no
+        # human has confirmed, which is the same as not validating at all.
+        return None
+    stored = (connection.host_keys or "").strip()
+    if not stored:
         return None
     host = connection.host or ""
     port = connection.port or 22
-    # known_hosts brackets a non-default port.
+    # known_hosts brackets the host when the port is not the default.
     target = f"[{host}]:{port}" if port != 22 else host
-    return f"{target} {fingerprint}"
+    lines = [f"{target} {entry.strip()}" for entry in stored.splitlines() if entry.strip()]
+    if not lines:
+        return None
+    return "\n".join(lines) + "\n"
 
 
 @dataclass
@@ -319,14 +330,16 @@ def prepare(
             if endpoint.uses_user_config:
                 uses_user_config = True
 
-            # SFTP host key pinning needs a real file on disk.
+            # SFTP host key validation needs a real file on disk: rclone enables
+            # it only when known_hosts_file is set. Public keys only, so this does
+            # not weaken the no-plaintext-on-disk guarantee.
             if connection.type == ConnectionType.sftp:
-                line = _known_hosts_line(connection)
-                if line:
+                content = known_hosts_content(connection)
+                if content:
                     if temp_dir is None:
                         temp_dir = tempfile.TemporaryDirectory(prefix="hivesync-")
                     path = Path(temp_dir.name) / f"known_hosts_{alias}"
-                    path.write_text(line + "\n", encoding="ascii")
+                    path.write_text(content, encoding="ascii")
                     endpoint.env[env_var_name(alias, "known_hosts_file")] = str(path)
 
             endpoints[alias] = endpoint

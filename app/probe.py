@@ -10,13 +10,21 @@ Host key handling implements SPEC section 15's trust on first use. rclone
 validates host keys only when known_hosts_file is set, so nothing is verified
 until a key is pinned. The flow is therefore:
 
-1. First test of an SFTP connection scans the host key and returns it for
-   approval. The test does not pass, and nothing is stored.
-2. The operator approves a specific fingerprint, which pins it.
+1. First test of an SFTP connection scans the host keys, records them as
+   untrusted, and returns them for approval. The test does not pass.
+2. The operator approves a fingerprint they have confirmed, which marks the
+   recorded keys trusted. This does no network access at all.
 3. Later tests and runs pass known_hosts, so a changed key fails loudly.
 
 Refusing to pass at step 1 is the whole point. A test that goes green while
 trusting anything trains people to click through the one prompt that matters.
+
+Approval deliberately does not re-scan. OpenSSH 9.8 added PerSourcePenalties,
+which throttles sources that connect without authenticating, and ssh-keyscan does
+precisely that. Scanning twice per approval gets an operator's own address
+penalised within a handful of clicks, after which host key approval fails with no
+obvious cause. Recording at scan time and approving from the record keeps the
+guarantee that what was reviewed is what gets pinned, at one scan instead of two.
 """
 
 from __future__ import annotations
@@ -38,8 +46,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class HostKeyPrompt:
+    """Every key the server offered, awaiting explicit approval.
+
+    `fingerprint` is the strongest key's, for a human to compare. `entries` is
+    everything that will be pinned if approved.
+    """
+
     fingerprint: str
-    key_line: str
+    fingerprints: list[str]
+    entries: list[str]
     prompt: str
 
 
@@ -54,20 +69,17 @@ class TestOutcome:
 
 
 def _needs_host_key_trust(connection: Connection) -> bool:
-    return (
-        connection.type == ConnectionType.sftp
-        and not (connection.host_key_fingerprint or "").strip()
-    )
+    return connection.type == ConnectionType.sftp and not connection.host_keys_trusted
 
 
 def _host_key_prompt(connection: Connection) -> HostKeyPrompt | None:
-    scanned = inspect.scan_host_key(connection.host or "", connection.port or 22)
-    if scanned is None:
+    scanned = inspect.scan_host_keys(connection.host or "", connection.port or 22)
+    if not scanned:
         return None
-    key_line, fingerprint = scanned
     return HostKeyPrompt(
-        fingerprint=fingerprint,
-        key_line=key_line,
+        fingerprint=scanned[0].fingerprint,
+        fingerprints=[key.fingerprint for key in scanned],
+        entries=[key.entry for key in scanned],
         prompt=(
             f"The host key for {connection.host} has not been seen before. Confirm "
             "this fingerprint matches the server before trusting it, by running "
@@ -116,10 +128,15 @@ def _run_test(connection: Connection, *, box: SecretBox, settings: Settings) -> 
                 ok=False,
                 message=(
                     f"Could not read an SSH host key from {connection.host} on port "
-                    f"{connection.port or 22}. Check the host, the port, and that "
-                    "the server is reachable."
+                    f"{connection.port or 22}. Check the host, the port, and that the "
+                    "server is reachable. If you have just tried several times in a "
+                    "row, wait a minute: OpenSSH throttles repeated connections that "
+                    "do not authenticate, which is what reading a host key does."
                 ),
             )
+        # Recorded now, trusted only on approval, so approving needs no second scan.
+        connection.host_keys = "\n".join(prompt.entries)
+        connection.host_keys_trusted = False
         return TestOutcome(
             ok=False,
             message=(
@@ -245,31 +262,40 @@ def trust_host_key(
     *,
     session: Session | None = None,
 ) -> None:
-    """Pin a host key after explicit approval.
+    """Approve the host keys recorded by the preceding test.
 
-    Re-scans and requires the presented fingerprint to still match, so approving
-    cannot pin a different key than the one that was reviewed.
+    The presented fingerprint must match one of the recorded keys, so an approval
+    cannot trust something other than what was displayed.
+
+    Deliberately does no network access: see the module docstring on OpenSSH
+    connection penalties. Re-scanning here would double the rate at which an
+    operator's own address gets throttled, and would protect only against a key
+    changing in the seconds between the prompt rendering and the click.
     """
-    scanned = inspect.scan_host_key(connection.host or "", connection.port or 22)
-    if scanned is None:
+    recorded = (connection.host_keys or "").strip()
+    if not recorded:
         raise RemoteConfigError(
-            f"Could not read an SSH host key from {connection.host} to confirm it. "
-            "Check the host is reachable and try again."
+            "There are no host keys recorded for this connection yet. Run Test "
+            "connection first, then approve the fingerprint it shows."
         )
-    key_line, scanned_fingerprint = scanned
-    if scanned_fingerprint != fingerprint:
+    if fingerprint not in set(inspect.fingerprints_of(recorded)):
         raise RemoteConfigError(
-            "The host key changed between being shown and being approved, so "
-            "nothing was trusted. Review the new fingerprint and try again."
+            "That fingerprint does not match the keys recorded for this connection, "
+            "so nothing was trusted. Run Test connection again and review the "
+            "fingerprint it shows."
         )
-    # Store the key line, which is what a known_hosts file needs. The fingerprint
-    # is derived from it for display.
-    connection.host_key_fingerprint = key_line
+    # Every recorded key becomes trusted, not just the approved one: the client
+    # negotiates whichever it prefers, and trusting one would force that algorithm.
+    connection.host_keys_trusted = True
     if session is not None:
         session.commit()
     logger.info(
-        "Pinned SSH host key",
-        extra={"connection": connection.name, "fingerprint": fingerprint},
+        "Pinned SSH host keys",
+        extra={
+            "connection": connection.name,
+            "fingerprint": fingerprint,
+            "key_count": len(recorded.splitlines()),
+        },
     )
 
 

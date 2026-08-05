@@ -15,6 +15,7 @@ is the bounded, capture-everything call that connection tests and probes use.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -97,6 +98,13 @@ def run(
     argv_list = list(argv)
     argv_redacted = redactor.redact_argv(argv_list)
 
+    # Overlay onto the current environment rather than replacing it. Passing a
+    # bare dict to subprocess wipes PATH, so rclone stops being findable, and it
+    # would also drop RCLONE_CONFIG_PASS, which SPEC section 5.2 requires be
+    # sourced from the environment for an encrypted user config. Our own
+    # RCLONE_CONFIG_* entries win over anything inherited.
+    child_env = {**os.environ, **env} if env is not None else None
+
     if log_label:
         logger.info(
             "Running external command",
@@ -111,7 +119,7 @@ def run(
             text=True,
             timeout=timeout_seconds,
             check=False,
-            env=dict(env) if env is not None else None,
+            env=child_env,
         )
     except subprocess.TimeoutExpired as expired:
         # TimeoutExpired carries whatever was captured before the kill.

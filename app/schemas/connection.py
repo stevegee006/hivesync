@@ -118,9 +118,10 @@ class ConnectionRead(BaseModel):
     rclone_remote_name: str | None
     rclone_backend_type: str | None
     sentinel_file: str | None
-    # A host key is a public key. Safe to show, and showing it is the point:
-    # SPEC 15 requires the fingerprint be visible.
-    host_key_fingerprint: str | None
+    # Public keys. Safe to show, and showing them is the point: SPEC 15 requires
+    # the fingerprint be visible for review.
+    host_keys: str | None
+    host_keys_trusted: bool
     last_test_at: datetime | None
     last_test_ok: bool | None
     last_test_error: str | None
@@ -133,9 +134,10 @@ class ConnectionRead(BaseModel):
 
 
 class HostKeyPrompt(BaseModel):
-    """An untrusted host key awaiting explicit approval. SPEC 15, trust on first use."""
+    """Untrusted host keys awaiting explicit approval. SPEC 15, trust on first use."""
 
     fingerprint: str
+    fingerprints: list[str] = Field(default_factory=list)
     prompt: str
 
 

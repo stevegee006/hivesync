@@ -330,7 +330,11 @@ def test_connection_partial(
         "command": outcome.command,
         "capabilities": capability_summary(connection),
         "host_key": (
-            {"fingerprint": outcome.host_key.fingerprint, "prompt": outcome.host_key.prompt}
+            {
+                "fingerprint": outcome.host_key.fingerprint,
+                "fingerprints": outcome.host_key.fingerprints,
+                "prompt": outcome.host_key.prompt,
+            }
             if outcome.host_key
             else None
         ),
@@ -365,7 +369,8 @@ def forget_host_key_form(
     security.require_user(request, session)
     connection = session.get(Connection, connection_id)
     if connection is not None:
-        connection.host_key_fingerprint = None
+        connection.host_keys = None
+        connection.host_keys_trusted = False
         session.commit()
     return RedirectResponse(url=f"/connections/{connection_id}", status_code=303)
 
