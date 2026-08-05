@@ -16,8 +16,8 @@ Read `SPEC.md` before starting any milestone.
 | Milestones complete | M0 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
-| Config generation method | (env vars or temp file, decide and record at M1) |
-| Capability probe method | (`rclone backend features` or fallback, record at M1) |
+| Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
+| Capability probe method | `rclone backend features <remote>:`, verified present in 1.74.4 with a stable JSON shape. No fallback needed |
 
 The lftp row says "observed" rather than "pinned" on purpose. Debian trixie ships
 one lftp and only security patches it, so an exact apt version pin turns every
@@ -195,6 +195,24 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, docker, `docker buildx ls` advertising `linux/arm64` does not mean arm64 builds work. Docker Desktop lists the platform but ships no binfmt handlers, so an arm64 stage dies with `exec format error`. Fix with `docker run --privileged --rm tonistiigi/binfmt --install arm64`, or build amd64 only, or let the GitHub Actions workflow do it (`docker/setup-qemu-action` handles this).
 - 2026-08-05, docker, `auths` keys present in `~/.docker/config.json` do **not** mean you are logged in. Docker Desktop leaves those keys behind when logged out, with the real tokens in an external credential store. Check with `docker info | grep -i username`, which prints nothing when unauthenticated.
 - 2026-08-05, tooling, never pipe a build or test command into `tail` when the exit code matters: the pipeline returns tail's status and a failure reports as success. Redirect to a file and check `$?`, or use `PIPESTATUS`.
+
+### Verified against rclone 1.74.4 in the built image, 2026-08-05
+
+Spikes run before M1 design. These replace assumptions in SPEC.md sections 5.3, 5.4 and 6.4.
+
+- **Env var remotes work.** `RCLONE_CONFIG_HSSRC_TYPE=local` makes `hssrc:` usable, appears in `listremotes`, and resolves under both `hssrc:` and `HSSRC:`. This is the config generation method.
+- **Env var secrets must be obscured.** Plaintext fails: `failed to decrypt password: input too short when revealing password - is it obscured?`. Obscured works.
+- **`rclone obscure -` reads plaintext from stdin.** This resolves the argv exposure concern: the plaintext never appears in a command line or on disk. Do not reimplement rclone's obscure algorithm in Python.
+- **`--config ""` fully disables config file lookup** and silences the "Config file not found" NOTICE. Pass it on every invocation that uses env var remotes, so an unexpected config file can never be picked up.
+- **`--max-delete` is an `int`, a count.** There is no percentage flag. The only related flag is `--max-delete-size SizeSuffix`. This confirms open issue 1 with evidence.
+- **`rclone backend features` returns** `Name`, `Root`, `String`, `Precision` (int), `Hashes` (list of strings), `Features` (dict of 52 booleans), `MetadataInfo`.
+- **There is no file-level `CanSetModTime` feature flag.** The only modtime entries are `DirSetModTime`, `WriteDirSetModTime`, `DirModTimeUpdatesOnWrite` and `SlowModTime`, all about directories. Per rclone convention, a backend that cannot set file modtimes reports `Precision` as `math.MaxInt64` (9223372036854775807). **That is the signal for the bidirectional gate in SPEC 5.4**, not a Features boolean. Confirm against the real SFTP, FTP and SMB fixtures during M1.
+- **`Features.CaseInsensitive` exists**, which directly serves the SPEC 10.7 case sensitivity warning.
+- **`rclone config providers` returns 69 providers.** Each option carries `IsPassword` and `Sensitive` booleans. `IsPassword` (36 options overall) means the value must be obscured. `Sensitive` (211 options overall) means redact from logs, and includes non-secrets like `host` and `user`. Drive both behaviours from this metadata rather than a hardcoded list.
+- **`sftp` exposes `key_pem`**, so an SSH private key can be passed inline through an env var. No temp key file on disk. `key_pem` is `Sensitive` but not `IsPassword`, so it is passed raw and must be redacted, not obscured.
+- **`sftp.known_hosts_file` defaults to empty, so rclone does not verify host keys by default.** SPEC section 15's "verification on by default" requires explicitly supplying a known_hosts file. Nothing is verified until we do.
+- **`smb` has no `share` option**, confirming SPEC 5.1: the share is the first path element of `remote:Share/path`.
+- Consequence for SPEC 5.3: the temp file fallback looks unnecessary. Inline remotes use env vars, imported remotes pass `--config /config/rclone/rclone.conf` directly and read only, and SSH keys use `key_pem`. **One unknown remains:** whether env var remotes coexist with `--config <user file>` in a single invocation, which a job pairing an inline endpoint with an imported one needs. Verify before ruling the temp file path out.
 
 ## Open spec issues carried forward
 
