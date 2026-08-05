@@ -15,7 +15,7 @@ Read `SPEC.md` before starting any milestone.
 | Milestone in progress | M1 not started |
 | Milestones complete | M0 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
-| Observed lftp version | (run `make pin-versions` once Docker is available and record it here) |
+| Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
 | Config generation method | (env vars or temp file, decide and record at M1) |
 | Capability probe method | (`rclone backend features` or fallback, record at M1) |
 
@@ -24,20 +24,31 @@ one lftp and only security patches it, so an exact apt version pin turns every
 future point release into a build failure for no safety gain. The base image gets
 pinned by digest at M8, which pins the apt snapshot properly.
 
-### M0 verification status
+### M0 verification status: acceptance criteria met
 
-Verified on the development host:
+Host:
 
 - 71 unit tests pass, `ruff check`, `ruff format --check` and `mypy app` are clean
 - `alembic upgrade head` produces exactly the declarative models, asserted by
   `tests/test_migrations.py`
-- The app boots, `/login` returns 200, `/` redirects unauthenticated requests, and
-  `/api/health` reports database and binary state
 
-**Not yet verified: the container.** Docker Desktop's daemon was not running, so
-`docker build` and `docker compose up` have never been executed. M0's acceptance
-criterion is not fully met until they are. Run `make build && make up`, then
-`make pin-versions`, and fill in the lftp row above.
+Container, `docker compose up`, verified 2026-08-05:
+
+- Image builds for amd64 and arm64. rclone digest check passes.
+- `/api/health` returns `status: ok` with `rclone 1.74.4` (`matches_expected: true`)
+  and `lftp 4.9.2`. **This is M0's acceptance criterion.**
+- `/login` serves a styled login page, 200. `/` redirects unauthenticated to
+  `/login?next=/`. Tailwind CSS and both vendored scripts serve from `/static`.
+- Full auth flow: bootstrap login, forced password change, dashboard, and a wrong
+  password rejected.
+- Container HEALTHCHECK reports `healthy`.
+- Startup order is correct: alembic upgrade, then key fingerprint, then admin
+  creation, then uvicorn.
+- PID 1 runs as uid 1000 with all four uid fields at 1000, so the setpriv drop is
+  complete and root cannot be regained. Remapping to `PUID=1500` works.
+- `TZ` reaches the app: startup logs `America/Denver`.
+
+Published to Docker Hub: not yet. See the Docker Hub section below.
 
 ## Rules
 
@@ -162,6 +173,11 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, windows, `docker/entrypoint.sh` must be LF. A CRLF in the shebang kills the container with an opaque error. Enforced by `.gitattributes`.
 - 2026-08-05, tailwind, the standalone CLI is a single Go binary, which is how "Tailwind with no Node build step" is satisfied. Tailwind publishes no checksum file for these assets, so there is no digest to pin.
 - 2026-08-05, starlette, `HTTP_422_UNPROCESSABLE_ENTITY` is deprecated in favour of `..._CONTENT`. `app/api/auth.py` uses a local literal so it works across versions.
+- 2026-08-05, lftp, Debian trixie ships **4.9.2**, not 4.9.3. Confirmed in the built image. Do not assume a version, read it with `make pin-versions`.
+- 2026-08-05, docker, there is deliberately no `USER` directive in the Dockerfile: the entrypoint needs root to apply PUID/PGID before dropping via setpriv. Consequence: `docker exec` lands as root even though PID 1 is uid 1000. Check the app's identity with `cat /proc/1/status`, not `docker exec id`. This is the standard PUID/PGID image tradeoff.
+- 2026-08-05, docker, `procps` is not in `python:3.12-slim`, so there is no `ps` in the runtime image. Use `/proc` or `docker top`.
+- 2026-08-05, windows, `make` is not installed on the development host, so the Makefile targets cannot be run there. The equivalent raw commands are in the README. Consider dropping the Makefile in favour of a script if this keeps biting.
+- 2026-08-05, windows, a bind mounted `/config` reports mode 777 regardless of the chown in the entrypoint, because Docker Desktop's filesystem does not carry POSIX modes. Do not write a permission assertion that expects otherwise on Windows.
 
 ## Open spec issues carried forward
 

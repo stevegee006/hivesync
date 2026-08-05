@@ -64,8 +64,10 @@ it. Two consequences:
 
 ## Local development
 
-Requires Python 3.12 or newer. On Windows, run `make` targets from Git Bash or
-WSL: the recipes are POSIX sh.
+Requires Python 3.12 or newer. The `make` targets are POSIX sh and need Git Bash or
+WSL on Windows, plus `make` itself, which Git for Windows does not include. Without
+it, every target is a single command you can paste directly; `make help` lists them,
+or read the Makefile.
 
 ```bash
 make install
@@ -123,7 +125,7 @@ authentication bypass. It arrives in M8.
 | Tool | Version | How |
 |---|---|---|
 | rclone | 1.74.4 | Official release zip, SHA256 verified against a pinned digest |
-| lftp | Debian trixie | Not version pinned, see below |
+| lftp | 4.9.2 | Debian trixie, not version pinned, see below |
 | Tailwind CLI | 4.3.3 | Standalone Go binary, no Node in the build |
 | htmx | 2.0.10 | Vendored, not a CDN |
 | Alpine.js | 3.15.12 | Vendored, not a CDN |
