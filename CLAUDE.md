@@ -12,8 +12,8 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | M1 |
-| Milestones complete | M0 |
+| Milestone in progress | M2 |
+| Milestones complete | M0, M1 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
@@ -208,6 +208,8 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, windows, a bind mounted `/config` reports mode 777 regardless of the chown in the entrypoint, because Docker Desktop's filesystem does not carry POSIX modes. Do not write a permission assertion that expects otherwise on Windows.
 - 2026-08-05, docker, `docker buildx ls` advertising `linux/arm64` does not mean arm64 builds work. Docker Desktop lists the platform but ships no binfmt handlers, so an arm64 stage dies with `exec format error`. Fix with `docker run --privileged --rm tonistiigi/binfmt --install arm64`, or build amd64 only, or let the GitHub Actions workflow do it (`docker/setup-qemu-action` handles this).
 - 2026-08-05, docker, `auths` keys present in `~/.docker/config.json` do **not** mean you are logged in. Docker Desktop leaves those keys behind when logged out, with the real tokens in an external credential store. Check with `docker info | grep -i username`, which prints nothing when unauthenticated.
+- 2026-08-05, docker, **a stage appended after `runtime` becomes the default build target**, so a plain `docker build .` silently produced an image whose entrypoint was pytest, and the container restart-looped running tests. The test image lives in `Dockerfile.test` for that reason, and compose pins `target: runtime` as well. Never append a stage after runtime.
+- 2026-08-05, ux, "these endpoints share no hash type" and "nobody has probed these endpoints" are different statements. Emitting the first when the second is true sends the reader off debugging the wrong problem. `capabilities.intersect` distinguishes them and so must anything else that reports on capabilities.
 - 2026-08-05, tooling, never pipe a build or test command into `tail` when the exit code matters: the pipeline returns tail's status and a failure reports as success. Redirect to a file and check `$?`, or use `PIPESTATUS`.
 
 ### M1 acceptance status, verified 2026-08-05
@@ -226,6 +228,47 @@ FTP and SMB fixtures, ruff and mypy clean.
 Remaining for M1: nothing blocking. The connection editor, credentials page,
 directory browser and compatibility page are built; the job editor that will
 consume the intersection logic belongs to a later milestone.
+
+### M2 dry run design, verified against rclone 1.74.4
+
+**SPEC section 8's `--combined` legend is inverted.** Real output for
+`rclone check SRC DST`: `+` is path1-only (will be created), `-` is path2-only
+(will be deleted), `*` differs, `=` identical. The spec states the opposite for
+`+` and `-`. Following it would label every about-to-be-created file "deleted" in
+the review table whose entire purpose is preventing accidental deletion.
+
+`--combined` is therefore not parsed at all. `check` has named per-category
+outputs, `--missing-on-dst`, `--missing-on-src`, `--differ`, `--match`,
+`--error`, which cannot be inverted by a reader or a later edit.
+
+**`check` compares hash and size, never modification times.** So it cannot
+reproduce what `sync` would do for the default mtime comparison, and the spec's
+"classify with check, confirm with sync" has the roles backwards. The engine uses:
+
+- Phase 1, `check --size-only`, for **presence only**. Presence is independent of
+  hashes and mtimes, so it is reliable for every backend pairing, and
+  `--size-only` means no hashing at all, which matters on a NAS.
+- Phase 2, `sync --dry-run --use-json-log`, as the **authority** on what changes,
+  because it is the same code path a live run takes.
+- Reconciliation: new = copied and missing on dest; updated = copied and present;
+  deleted = deleted; unchanged = present on source and not copied.
+
+Other verified behaviour:
+
+- `sync --dry-run --use-json-log` lines carry a machine-readable **`skipped`**
+  field, `"copy"` or `"delete"`. Do not parse the message string. Both new and
+  updated files report `skipped: "copy"`, which is why phase 1 is needed to tell
+  them apart.
+- **`check` exits 1 when differences exist.** That is the normal case, not a
+  failure, and `CommandResult.ok` would read it as one.
+- **`--max-delete` trips during a dry run**, exit 7 with
+  `--max-delete threshold reached`, and truncates the plan at the threshold. The
+  planning pass therefore uses a high limit and evaluates the real brake against
+  the full count afterwards. Invariant 7 is untouched: live syncs pass the real value.
+- **Dry run modifies nothing.** Verified byte for byte before and after.
+- With no common hash, `check` does not fail; it falls back to size and reports
+  "N hashes could not be checked". With `--size-only`, a 4-byte-vs-4-byte content
+  change is reported **identical**. That blind spot is surfaced as a plan warning.
 
 ### Verified against rclone 1.74.4 in the built image, 2026-08-05
 

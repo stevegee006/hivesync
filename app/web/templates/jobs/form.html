@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+{% block title %}{% if job %}{{ job.name }}{% else %}New job{% endif %}{% endblock %}
+
+{% block content %}
+<div class="flex items-baseline justify-between">
+  <h1 class="text-xl font-semibold tracking-tight text-slate-100">
+    {% if job %}{{ job.name }}{% else %}New job{% endif %}
+  </h1>
+  <a href="/jobs" class="text-sm text-slate-400 hover:text-slate-100">Back</a>
+</div>
+
+{% include "partials/_flash.html" %}
+
+{% if connections | length < 2 %}
+<p class="mt-6 rounded border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
+  A job pairs two connections, so at least two are needed.
+  <a href="/connections/new" class="underline">Add one</a>.
+</p>
+{% else %}
+
+{# Every option that depends on the two endpoints' capabilities is disabled here
+   with the reason attached, using the same intersection logic and the same
+   strings as the compatibility page. SPEC section 5.4. #}
+<form method="post"
+      action="{% if job %}/jobs/{{ job.id }}{% else %}/jobs{% endif %}"
+      class="mt-6 space-y-8">
+
+  <section class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <div class="space-y-4">
+      <div>
+        <label for="name" class="block text-sm text-slate-400">Name</label>
+        <input id="name" name="name" required maxlength="128"
+               value="{{ job.name if job else '' }}"
+               class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+      </div>
+
+      <div class="grid grid-cols-3 gap-3">
+        <div class="col-span-2">
+          <label for="source_connection_id" class="block text-sm text-slate-400">Source</label>
+          <select id="source_connection_id" name="source_connection_id"
+                  class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+            {% for connection in connections %}
+            <option value="{{ connection.id }}"
+              {% if job and job.source_connection_id == connection.id %}selected{% endif %}>
+              {{ connection.name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="source_path" class="block text-sm text-slate-400">Subpath</label>
+          <input id="source_path" name="source_path"
+                 value="{{ job.source_path if job else '' }}"
+                 class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3">
+        <div class="col-span-2">
+          <label for="dest_connection_id" class="block text-sm text-slate-400">Destination</label>
+          <select id="dest_connection_id" name="dest_connection_id"
+                  class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+            {% for connection in connections %}
+            <option value="{{ connection.id }}"
+              {% if job and job.dest_connection_id == connection.id %}selected{% endif %}>
+              {{ connection.name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="dest_path" class="block text-sm text-slate-400">Subpath</label>
+          <input id="dest_path" name="dest_path"
+                 value="{{ job.dest_path if job else '' }}"
+                 class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        </div>
+      </div>
+
+      <div>
+        <label for="direction" class="block text-sm text-slate-400">Direction</label>
+        <select id="direction" name="direction"
+                class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          <option value="source_to_dest" {% if job and job.direction.value == 'source_to_dest' %}selected{% endif %}>
+            one way, source to destination
+          </option>
+          <option value="dest_to_source" {% if job and job.direction.value == 'dest_to_source' %}selected{% endif %}>
+            one way, destination to source
+          </option>
+          <option value="bidirectional" disabled>
+            bidirectional
+            {% if compat and not compat.bidirectional.available %}
+              (unavailable)
+            {% else %}
+              (not implemented yet)
+            {% endif %}
+          </option>
+        </select>
+        {% if compat and not compat.bidirectional.available %}
+        <p class="mt-1 text-xs text-amber-400">{{ compat.bidirectional.reason }}</p>
+        {% else %}
+        <p class="mt-1 text-xs text-slate-500">
+          Bidirectional sync arrives in a later milestone. It needs bisync, resync
+          gating and conflict handling to be safe.
+        </p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="space-y-4">
+      <div>
+        <label for="compare_mode" class="block text-sm text-slate-400">Compare files by</label>
+        <select id="compare_mode" name="compare_mode"
+                class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          <option value="mtime_size" {% if job and job.compare_mode.value == 'mtime_size' %}selected{% endif %}>
+            modification time and size
+          </option>
+          <option value="checksum"
+                  {% if compat and not compat.checksum.available %}disabled{% endif %}
+                  {% if job and job.compare_mode.value == 'checksum' %}selected{% endif %}>
+            checksum{% if compat and not compat.checksum.available %} (unavailable){% endif %}
+          </option>
+          <option value="size_only" {% if job and job.compare_mode.value == 'size_only' %}selected{% endif %}>
+            size only
+          </option>
+        </select>
+        {# The reason is the product. SPEC 5.4 requires every disabled option to
+           explain itself inline, and M1 criterion four is exactly this string. #}
+        {% if compat and not compat.checksum.available %}
+        <p class="mt-1 text-xs text-amber-400">{{ compat.checksum.reason }}</p>
+        {% endif %}
+      </div>
+
+      <div>
+        <label for="modify_window" class="block text-sm text-slate-400">Modify window</label>
+        <input id="modify_window" name="modify_window" value="{{ job.modify_window if job else '1s' }}"
+               class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        <p class="mt-1 text-xs text-slate-500">
+          If a NAS clock drifts or timestamp granularity differs, mtime comparison
+          re-transfers unchanged files forever. Widening this is the fix.
+        </p>
+      </div>
+
+      <div>
+        <label for="delete_mode" class="block text-sm text-slate-400">Extra files on the destination</label>
+        <select id="delete_mode" name="delete_mode"
+                class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          <option value="none" {% if job and job.delete_mode.value == 'none' %}selected{% endif %}>
+            leave them alone
+          </option>
+          <option value="delete" {% if job and job.delete_mode.value == 'delete' %}selected{% endif %}>
+            delete them
+          </option>
+          <option value="archive" disabled>move them to an archive (not implemented yet)</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="max_delete_pct" class="block text-sm text-slate-400">Delete brake</label>
+        <div class="mt-1 flex items-center gap-2">
+          <input id="max_delete_pct" name="max_delete_pct" type="number" min="0" max="100"
+                 value="{{ job.max_delete_pct if job else 20 }}"
+                 class="w-24 rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          <span class="text-sm text-slate-500">% of the destination</span>
+        </div>
+        <p class="mt-1 text-xs text-slate-500">
+          A run stops rather than deleting more than this. It is what stops a
+          source that failed to mount from emptying the destination. Always
+          applied, and at least one deletion is always allowed.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 gap-6 border-t border-slate-800 pt-6 lg:grid-cols-2">
+    <div>
+      <label for="filters_exclude" class="block text-sm text-slate-400">Exclude patterns</label>
+      <textarea id="filters_exclude" name="filters_exclude" rows="4"
+                class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-100 focus:border-slate-500 focus:outline-none"
+                placeholder="one per line">{{ exclude_text }}</textarea>
+    </div>
+    <div>
+      <span class="block text-sm text-slate-400">Filter presets</span>
+      <div class="mt-2 space-y-1">
+        {% for preset in presets %}
+        <label class="flex items-start gap-2 text-xs text-slate-300">
+          <input type="checkbox" name="filter_preset_ids" value="{{ preset.id }}" class="mt-0.5"
+                 {% if job and preset.id in selected_preset_ids %}checked{% endif %}>
+          <span>
+            {{ preset.name }}
+            <span class="text-slate-600">({{ preset.rules.get('exclude', []) | length }} rules)</span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+      <p class="mt-2 text-xs text-slate-500">
+        Synology scatters <span class="font-mono">@eaDir</span> through every
+        directory. Without the preset it is synced, then archived, then archived
+        again.
+      </p>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-3 gap-3 border-t border-slate-800 pt-6">
+    <div>
+      <label for="transfers" class="block text-sm text-slate-400">Transfers</label>
+      <input id="transfers" name="transfers" type="number" min="1" max="64"
+             value="{{ job.transfers or '' if job else '' }}"
+             class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+    </div>
+    <div>
+      <label for="checkers" class="block text-sm text-slate-400">Checkers</label>
+      <input id="checkers" name="checkers" type="number" min="1" max="256"
+             value="{{ job.checkers or '' if job else '' }}"
+             class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+    </div>
+    <div>
+      <label for="bwlimit" class="block text-sm text-slate-400">Bandwidth limit</label>
+      <input id="bwlimit" name="bwlimit" value="{{ job.bwlimit or '' if job else '' }}"
+             placeholder="10M"
+             class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+    </div>
+  </section>
+
+  {% if compat and compat.warnings %}
+  <section class="space-y-2">
+    {% for warning in compat.warnings %}
+    <div class="rounded border border-amber-800 bg-amber-950/40 px-4 py-2 text-sm text-amber-200">
+      {{ warning }}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <div class="flex items-center gap-3 border-t border-slate-800 pt-4">
+    <button type="submit"
+            class="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-white">
+      Save
+    </button>
+  </div>
+</form>
+
+{# Outside the form above: a form cannot be nested inside another form, and a
+   browser silently drops the inner one. #}
+{% if job %}
+<form method="post" action="/jobs/{{ job.id }}/run" class="mt-3">
+  <button type="submit"
+          class="rounded border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-slate-500">
+    Dry run
+  </button>
+  <span class="ml-2 text-xs text-slate-500">Changes nothing on either endpoint.</span>
+</form>
+{% endif %}
+
+{% if job %}
+{# The Review summary from SPEC section 13, rendered from the saved job so it
+   describes what will happen rather than what someone meant to type. #}
+<div class="mt-8 rounded border border-slate-800 bg-slate-900/50 px-4 py-3">
+  <p class="text-xs uppercase tracking-wide text-slate-500">What this job does</p>
+  <p class="mt-2 text-sm text-slate-200">{{ description }}</p>
+</div>
+
+<h2 class="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">Runs</h2>
+{% if not runs %}
+<p class="mt-3 text-sm text-slate-500">No runs yet. A dry run changes nothing.</p>
+{% else %}
+<div class="mt-3 overflow-x-auto rounded border border-slate-800">
+  <table class="min-w-full divide-y divide-slate-800 text-sm">
+    <thead class="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-500">
+      <tr>
+        <th class="px-4 py-2 text-left">Status</th>
+        <th class="px-4 py-2 text-left">Mode</th>
+        <th class="px-4 py-2 text-left">Started</th>
+        <th class="px-4 py-2 text-left">Result</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800 bg-slate-900/30">
+      {% for run in runs %}
+      <tr>
+        <td class="px-4 py-2">
+          <a href="/runs/{{ run.id }}" class="hover:underline">{{ run.status.value }}</a>
+        </td>
+        <td class="px-4 py-2 text-xs text-slate-400">{{ run.mode.value }}</td>
+        <td class="px-4 py-2 font-mono text-xs text-slate-500">
+          {{ run.started_at.strftime('%Y-%m-%d %H:%M') if run.started_at else 'queued' }}
+        </td>
+        <td class="px-4 py-2 text-xs text-slate-400">
+          {% if run.status.value == 'success' %}
+            {{ run.files_transferred }} to transfer, {{ run.files_deleted }} to delete
+          {% elif run.summary and run.summary.get('error') %}
+            {{ run.summary['error'] | truncate(80) }}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

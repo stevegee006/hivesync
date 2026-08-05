@@ -175,17 +175,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # Starts as root only to apply PUID/PGID, then drops to the hivesync user.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-
-# ---------------------------------------------------------------------------
-# Test image. Adds the dev dependencies so the integration suite can run inside
-# the container, against the pinned rclone rather than whatever is on a
-# developer's PATH. Not part of the published image.
-# ---------------------------------------------------------------------------
-FROM runtime AS test
-
-USER root
-COPY pyproject.toml /tmp/pyproject.toml
-RUN pip install --no-cache-dir pytest pytest-asyncio
-WORKDIR /src
-ENTRYPOINT []
-CMD ["pytest", "-m", "integration"]

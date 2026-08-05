@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -24,14 +24,33 @@ from sqlalchemy.orm import Session
 from app import __version__, capabilities, probe, security
 from app.api.auth import safe_redirect_target
 from app.api.connections import capability_summary, to_read
+from app.api.jobs import _apply as apply_job
+from app.api.jobs import describe
 from app.binaries import BinaryReport
 from app.crypto import SecretBox
 from app.db import get_session
 from app.engines import inspect
 from app.engines.rcloneconf import RemoteConfigError
-from app.models import Connection, ConnectionType, Credential, CredentialKind, RcloneMode
+from app.jobs import planner
+from app.models import (
+    CompareMode,
+    Connection,
+    ConnectionType,
+    Credential,
+    CredentialKind,
+    DeleteMode,
+    Direction,
+    FilterPreset,
+    Job,
+    JobRun,
+    JobRunChange,
+    RcloneMode,
+    RunMode,
+    RunTrigger,
+)
 from app.schemas.connection import ConnectionCreate
 from app.schemas.credential import CredentialCreate
+from app.schemas.job import JobCreate, JobFilters
 
 logger = logging.getLogger(__name__)
 
@@ -560,3 +579,189 @@ def compatibility_page(
         "stale": intersection.stale,
     }
     return templates.TemplateResponse(request, "compatibility.html", context)
+
+
+# --------------------------------------------------------------------------
+# Jobs and runs
+# --------------------------------------------------------------------------
+
+
+def _job_form_context(
+    request: Request,
+    session: Session,
+    job: Job | None,
+    *,
+    error: str | None = None,
+) -> dict[str, Any]:
+    context = _page_context(request, session)
+    connections = list(session.scalars(select(Connection).order_by(Connection.name)))
+    context["job"] = job
+    context["error"] = error
+    context["connections"] = connections
+    context["presets"] = list(session.scalars(select(FilterPreset).order_by(FilterPreset.name)))
+    context["selected_preset_ids"] = [preset.id for preset in job.filter_presets] if job else []
+    context["exclude_text"] = "\n".join((job.filters or {}).get("exclude", []) or []) if job else ""
+    context["description"] = describe(job) if job else None
+    context["runs"] = planner.latest_runs(session, job.id) if job else []
+
+    # The same intersection and the same reason strings the compatibility page
+    # uses, so a disabled option explains itself inline. SPEC section 5.4.
+    context["compat"] = None
+    if job is not None and job.source_connection and job.dest_connection:
+        context["compat"] = capabilities.intersect(job.source_connection, job.dest_connection)
+    elif len(connections) >= 2:
+        context["compat"] = capabilities.intersect(connections[0], connections[1])
+    return context
+
+
+def _job_payload(form: dict[str, str], preset_ids: list[int]) -> JobCreate:
+    def number(name: str) -> int | None:
+        raw = (form.get(name) or "").strip()
+        return int(raw) if raw else None
+
+    excludes = [
+        line.strip() for line in (form.get("filters_exclude") or "").splitlines() if line.strip()
+    ]
+    return JobCreate(
+        name=(form.get("name") or "").strip(),
+        source_connection_id=int(form["source_connection_id"]),
+        source_path=(form.get("source_path") or "").strip(),
+        dest_connection_id=int(form["dest_connection_id"]),
+        dest_path=(form.get("dest_path") or "").strip(),
+        direction=Direction(form.get("direction") or "source_to_dest"),
+        compare_mode=CompareMode(form.get("compare_mode") or "mtime_size"),
+        modify_window=(form.get("modify_window") or "1s").strip(),
+        delete_mode=DeleteMode(form.get("delete_mode") or "none"),
+        max_delete_pct=number("max_delete_pct") or 0,
+        transfers=number("transfers"),
+        checkers=number("checkers"),
+        bwlimit=(form.get("bwlimit") or "").strip() or None,
+        filters=JobFilters(exclude=excludes),
+        filter_preset_ids=preset_ids,
+    )
+
+
+@router.get("/jobs", response_class=HTMLResponse)
+def jobs_page(request: Request, session: Session = Depends(get_session)) -> Any:
+    context = _page_context(request, session)
+    jobs = list(session.scalars(select(Job).order_by(Job.name)))
+    context["jobs"] = [
+        {
+            "job": job,
+            "description": describe(job),
+            "last_run": next(iter(planner.latest_runs(session, job.id, limit=1)), None),
+        }
+        for job in jobs
+    ]
+    return templates.TemplateResponse(request, "jobs/list.html", context)
+
+
+@router.get("/jobs/new", response_class=HTMLResponse)
+def new_job_page(request: Request, session: Session = Depends(get_session)) -> Any:
+    return templates.TemplateResponse(
+        request, "jobs/form.html", _job_form_context(request, session, None)
+    )
+
+
+@router.get("/jobs/{job_id}", response_class=HTMLResponse)
+def edit_job_page(job_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
+    job = session.get(Job, job_id)
+    if job is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+    return templates.TemplateResponse(
+        request, "jobs/form.html", _job_form_context(request, session, job)
+    )
+
+
+async def _save_job(request: Request, session: Session, job: Job | None) -> Any:
+    security.require_user(request, session)
+    form_data = await request.form()
+    form = {key: str(value) for key, value in form_data.items()}
+    preset_ids = [
+        int(value)
+        for value in form_data.getlist("filter_preset_ids")
+        if isinstance(value, str) and value.isdigit()
+    ]
+
+    try:
+        payload = _job_payload(form, preset_ids)
+    except (ValidationError, ValueError, KeyError) as exc:
+        message = (
+            _describe_validation_error(exc)
+            if isinstance(exc, ValidationError)
+            else "Every field needs a value before this job can be saved."
+        )
+        context = _job_form_context(request, session, job, error=message)
+        return templates.TemplateResponse(request, "jobs/form.html", context, status_code=400)
+
+    target = job or Job()
+    try:
+        apply_job(session, target, payload)
+    except HTTPException as exc:
+        context = _job_form_context(request, session, job, error=str(exc.detail))
+        return templates.TemplateResponse(request, "jobs/form.html", context, status_code=400)
+
+    if job is None:
+        session.add(target)
+    session.commit()
+    return RedirectResponse(url=f"/jobs/{target.id}", status_code=303)
+
+
+@router.post("/jobs", response_class=HTMLResponse)
+async def create_job_form(request: Request, session: Session = Depends(get_session)) -> Any:
+    return await _save_job(request, session, None)
+
+
+@router.post("/jobs/{job_id}", response_class=HTMLResponse)
+async def update_job_form(
+    job_id: int, request: Request, session: Session = Depends(get_session)
+) -> Any:
+    job = session.get(Job, job_id)
+    if job is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+    return await _save_job(request, session, job)
+
+
+@router.post("/jobs/{job_id}/run", response_class=HTMLResponse)
+def run_job_form(job_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
+    security.require_user(request, session)
+    job = session.get(Job, job_id)
+    if job is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+    try:
+        run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.dry_run)
+    except planner.RunConflict:
+        # Already running. Show the run in flight rather than an error: it is
+        # what the operator wanted to look at anyway.
+        existing = next(iter(planner.latest_runs(session, job.id, limit=1)), None)
+        destination = f"/runs/{existing.id}" if existing else f"/jobs/{job.id}"
+        return RedirectResponse(url=destination, status_code=303)
+
+    request.app.state.plan_runner.submit(run.id)
+    return RedirectResponse(url=f"/runs/{run.id}", status_code=303)
+
+
+@router.get("/runs/{run_id}", response_class=HTMLResponse)
+def run_detail_page(
+    run_id: int,
+    request: Request,
+    action: str | None = None,
+    session: Session = Depends(get_session),
+) -> Any:
+    context = _page_context(request, session)
+    run = session.get(JobRun, run_id)
+    if run is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+
+    query = select(JobRunChange).where(JobRunChange.run_id == run_id)
+    if action:
+        query = query.where(JobRunChange.action == action)
+    changes = list(
+        session.scalars(query.order_by(JobRunChange.action, JobRunChange.path).limit(1000))
+    )
+
+    context["run"] = run
+    context["job"] = session.get(Job, run.job_id)
+    context["changes"] = changes
+    context["active_action"] = action or ""
+    return templates.TemplateResponse(request, "runs/detail.html", context)

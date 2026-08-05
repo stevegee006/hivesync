@@ -26,10 +26,11 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import __version__, binaries, crypto, security, web
+from app import __version__, binaries, crypto, filter_presets, security, web
 from app.api import api_router
 from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, session_scope
+from app.jobs.planner import PlanRunner
 from app.logging_conf import configure_logging
 from app.models import SECRET_KEY_FINGERPRINT, Setting
 
@@ -72,6 +73,7 @@ def run_startup_checks(app: FastAPI) -> None:
     _check_key_fingerprint(app)
     with session_scope(app.state.session_factory) as session:
         security.bootstrap_admin(session, settings)
+        filter_presets.seed_builtin_presets(session)
 
 
 @asynccontextmanager
@@ -146,6 +148,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Probed again in lifespan. Set here so /api/health is answerable even if a
     # test client never enters the lifespan context.
     app.state.binaries = binaries.collect(settings.expected_rclone_version)
+    app.state.plan_runner = PlanRunner(
+        app.state.session_factory, box=app.state.secrets, settings=settings
+    )
 
     app.add_middleware(
         SessionMiddleware,

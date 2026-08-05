@@ -2,6 +2,8 @@ services:
   hivesync:
     build:
       context: .
+      # Explicit, so this can never pick up a later stage by accident.
+      target: runtime
       args:
         RCLONE_VERSION: ${RCLONE_VERSION:-1.74.4}
         TAILWIND_VERSION: ${TAILWIND_VERSION:-4.3.3}

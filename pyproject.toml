@@ -67,6 +67,8 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header"]
 # without adding safety, since mypy does not check the test tree anyway.
 "tests/*" = ["S101", "S105", "S106", "S107", "ANN001", "ANN201"]
 "migrations/*" = ["ANN", "E501"]         # generated-style migration bodies
+# Captured rclone output, kept verbatim. Wrapping it would falsify the sample.
+"tests/test_parsers.py" = ["E501"]
 # S105 flags string literals whose name looks credential-like. In these three the
 # literal is an identifier: an enum member describing a credential kind, or a
 # settings key. No secret value appears in source anywhere.

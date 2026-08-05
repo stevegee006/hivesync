@@ -77,8 +77,8 @@ test-integration: test-image
 		exit $$status
 
 .PHONY: test-image
-test-image:
-	docker build --target test $(BUILD_ARGS) -t $(IMAGE_NAME):test .
+test-image: build
+	docker build -f Dockerfile.test --build-arg BASE=$(IMAGE_NAME):latest -t $(IMAGE_NAME):test .
 
 .PHONY: lint
 lint:

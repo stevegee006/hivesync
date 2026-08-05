@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+#
+# Test image: the runtime image plus the dev dependencies, so the integration
+# suite runs against the pinned rclone rather than whatever is on a developer's
+# PATH.
+#
+# Deliberately a separate file rather than a stage in the main Dockerfile. A
+# stage appended after `runtime` becomes the default build target, so a plain
+# `docker build .` would silently produce an image whose entrypoint is pytest.
+#
+# Build with `make test-image`, which builds the runtime image first.
+ARG BASE=hivesync:latest
+FROM ${BASE}
+
+USER root
+RUN pip install --no-cache-dir pytest pytest-asyncio
+WORKDIR /src
+ENTRYPOINT []
+CMD ["pytest", "-m", "integration"]
