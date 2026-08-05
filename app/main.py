@@ -32,6 +32,7 @@ from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, session_scope
 from app.jobs.planner import PlanRunner
 from app.jobs.runner import LiveRunner
+from app.jobs.scheduler import JobScheduler
 from app.logging_conf import configure_logging
 from app.models import SECRET_KEY_FINGERPRINT, Setting
 
@@ -103,6 +104,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "authenticates for you."
         )
 
+    # The schedule is rebuilt from the Job table rather than loaded from a
+    # jobstore, so restart survival comes from our own database. See
+    # app/jobs/scheduler.py.
+    app.state.scheduler.start()
+
     logger.info(
         "HiveSync started",
         extra={
@@ -113,7 +119,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "timezone": settings.timezone,
         },
     )
-    yield
+    try:
+        yield
+    finally:
+        app.state.scheduler.shutdown()
+        app.state.live_runner.shutdown()
+        app.state.plan_runner.shutdown()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -154,6 +165,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.live_runner = LiveRunner(
         app.state.session_factory, box=app.state.secrets, settings=settings
+    )
+    # Started in the lifespan, not here: create_app runs during tests that never
+    # want a background thread firing real syncs.
+    app.state.scheduler = JobScheduler(
+        app.state.session_factory, app.state.live_runner, settings=settings
     )
 
     app.add_middleware(

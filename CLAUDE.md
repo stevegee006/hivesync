@@ -12,8 +12,8 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | M3 |
-| Milestones complete | M0, M1, M2 |
+| Milestone in progress | M4 |
+| Milestones complete | M0, M1, M2, M3 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
@@ -230,6 +230,39 @@ FTP and SMB fixtures, ruff and mypy clean.
 Remaining for M1: nothing blocking. The connection editor, credentials page,
 directory browser and compatibility page are built; the job editor that will
 consume the intersection logic belongs to a later milestone.
+
+### M4 scheduler design
+
+**The schedule lives in the Job table, not in an APScheduler jobstore.** SPEC
+section 3 specifies `SQLAlchemyJobStore`; this deviates, with evidence:
+
+- Starting one against our database creates `apscheduler_jobs`, which is not in
+  `Base.metadata`, so Alembic autogenerate immediately proposes
+  `remove_table apscheduler_jobs`. The next generated migration would delete the
+  schedule store on upgrade. Verified directly.
+- It is a second copy of every schedule that must be kept in step on every job
+  edit and delete, and it pickles a function reference that breaks when the
+  function moves.
+
+Rebuilding from `Job.schedule_cron` at startup gives the same restart survival,
+because the schedule was always persisted there. It also means a restart fires no
+backlog at all, which is what section 9 wants `coalesce` and `misfire_grace_time`
+to achieve. Anything that edits a job calls `scheduler.reload()`.
+
+**Overlap is prevented three times over**, because "never double-runs" is a claim
+about a tool that deletes files: APScheduler's `max_instances=1`, a recorded
+`skipped` run instead of queueing (SPEC 6.2, which is what `skip_reason` has been
+waiting for since M0), and the database's partial unique index.
+
+**APScheduler 3.11.3 uses zoneinfo, not pytz.** `CronTrigger.from_crontab` takes
+a timezone string, rejects a malformed expression with `ValueError` and an unknown
+zone with `ZoneInfoNotFoundError`. No extra dependency.
+
+The schedule preview is concrete fire times rather than prose. They are
+unambiguous for any expression, and they come from the same trigger object the
+scheduler uses, so the preview cannot disagree with what happens. A note on
+reading them: at exactly a boundary instant, `*/2` matches *now*, so the first
+listed time can be the current minute. That is correct, not an off-by-one.
 
 ### M3 live sync design
 

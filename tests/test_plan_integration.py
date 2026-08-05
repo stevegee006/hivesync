@@ -350,11 +350,14 @@ def test_a_broken_job_fails_the_run_rather_than_the_process(env, tmp_path: Path)
     assert stored.summary["error"]
 
 
-def test_live_mode_is_refused(tree, env) -> None:
+def test_execute_directs_callers_to_the_runner(tree, env) -> None:
+    """Live runs exist now, but they go through jobs.runner, which can stream and
+    cancel. This signature cannot express either, so it refuses rather than
+    offering a second, unsupervised path to a destructive sync."""
     src, dst = tree
     settings, box, session = env
     job = _job_over(session, src, dst)
-    with pytest.raises(EngineError, match="not implemented"):
+    with pytest.raises(EngineError, match="job runner"):
         RcloneEngine().execute(job, box=box, settings=settings)
 
 

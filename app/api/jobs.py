@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import CurrentUser
 from app.db import get_session
 from app.engines.base import EngineError
-from app.jobs import planner
+from app.jobs import cron, planner
 from app.jobs.events import broker
 from app.models import (
     Connection,
@@ -72,6 +72,18 @@ _SCALARS = (
     "timeout_seconds",
     "notify_on",
 )
+
+
+def _resync(request: Request) -> None:
+    """Rebuild the schedule after any change to a job.
+
+    The Job table is the only source of truth for schedules, so anything that
+    edits it has to tell the scheduler. Rebuilding wholesale is cheap at this
+    scale and removes any chance of the two disagreeing.
+    """
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None and scheduler.running:
+        scheduler.reload()
 
 
 def describe(job: Job) -> str:
@@ -160,6 +172,32 @@ class FilterPresetRead(BaseModel):
     rules: dict[str, Any]
 
 
+class SchedulePreviewRequest(BaseModel):
+    schedule_cron: str | None = None
+    timezone: str = "UTC"
+
+
+class SchedulePreviewResponse(BaseModel):
+    valid: bool
+    error: str | None = None
+    fire_times: list[str] = []
+
+
+@router.post("/schedule-preview", response_model=SchedulePreviewResponse)
+def schedule_preview(
+    payload: SchedulePreviewRequest, _user: CurrentUser
+) -> SchedulePreviewResponse:
+    """The next few fire times for an expression. SPEC section 9.
+
+    Asks the same trigger object the scheduler uses, so the preview cannot drift
+    from what will actually happen.
+    """
+    result = cron.preview(payload.schedule_cron, payload.timezone)
+    return SchedulePreviewResponse(
+        valid=result.valid, error=result.error, fire_times=result.formatted
+    )
+
+
 @router.get("/filter-presets", response_model=list[FilterPresetRead])
 def list_filter_presets(
     _user: CurrentUser, session: Session = Depends(get_session)
@@ -177,7 +215,10 @@ def list_jobs(_user: CurrentUser, session: Session = Depends(get_session)) -> li
 
 @router.post("/jobs", response_model=JobRead, status_code=status.HTTP_201_CREATED)
 def create_job(
-    payload: JobCreate, _user: CurrentUser, session: Session = Depends(get_session)
+    payload: JobCreate,
+    request: Request,
+    _user: CurrentUser,
+    session: Session = Depends(get_session),
 ) -> JobRead:
     _require_connections(session, payload)
     job = Job()
@@ -191,6 +232,7 @@ def create_job(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"A job named '{payload.name}' already exists.",
         ) from exc
+    _resync(request)
     logger.info("Created job", extra={"job": job.name})
     return to_read(job)
 
@@ -226,12 +268,18 @@ def update_job(
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_job(job_id: int, _user: CurrentUser, session: Session = Depends(get_session)) -> None:
+def delete_job(
+    job_id: int,
+    request: Request,
+    _user: CurrentUser,
+    session: Session = Depends(get_session),
+) -> None:
     job = session.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such job.")
     session.delete(job)
     session.commit()
+    _resync(request)
 
 
 @router.post("/jobs/{job_id}/run", response_model=RunRead, status_code=status.HTTP_202_ACCEPTED)

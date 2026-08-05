@@ -31,7 +31,7 @@ from app.crypto import SecretBox
 from app.db import get_session
 from app.engines import inspect
 from app.engines.rcloneconf import RemoteConfigError
-from app.jobs import planner
+from app.jobs import cron, planner
 from app.models import (
     CompareMode,
     Connection,
@@ -603,6 +603,11 @@ def _job_form_context(
     context["selected_preset_ids"] = [preset.id for preset in job.filter_presets] if job else []
     context["exclude_text"] = "\n".join((job.filters or {}).get("exclude", []) or []) if job else ""
     context["description"] = describe(job) if job else None
+    context["schedule_preview"] = cron.preview(job.schedule_cron, job.timezone) if job else None
+    scheduler = getattr(request.app.state, "scheduler", None)
+    context["next_run"] = (
+        scheduler.next_run_time(job.id) if job and scheduler and scheduler.running else None
+    )
     context["runs"] = planner.latest_runs(session, job.id) if job else []
 
     # The same intersection and the same reason strings the compatibility page
@@ -639,6 +644,10 @@ def _job_payload(form: dict[str, str], preset_ids: list[int]) -> JobCreate:
         bwlimit=(form.get("bwlimit") or "").strip() or None,
         filters=JobFilters(exclude=excludes),
         filter_preset_ids=preset_ids,
+        schedule_cron=(form.get("schedule_cron") or "").strip() or None,
+        timezone=(form.get("timezone") or "UTC").strip() or "UTC",
+        # An unchecked checkbox is simply absent from the form.
+        enabled=form.get("enabled") == "true",
     )
 
 
@@ -705,6 +714,9 @@ async def _save_job(request: Request, session: Session, job: Job | None) -> Any:
     if job is None:
         session.add(target)
     session.commit()
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None and scheduler.running:
+        scheduler.reload()
     return RedirectResponse(url=f"/jobs/{target.id}", status_code=303)
 
 

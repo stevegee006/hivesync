@@ -93,6 +93,16 @@ class JobBase(BaseModel):
         if self.archive_base and self.delete_mode != DeleteMode.archive:
             raise ValueError("An archive path only applies when deletion archiving is on.")
 
+        # A schedule that cannot be parsed must not be savable: it would sit
+        # there looking configured and never fire.
+        if self.schedule_cron and self.schedule_cron.strip():
+            from app.jobs.cron import CronError, validate
+
+            try:
+                validate(self.schedule_cron, self.timezone)
+            except CronError as exc:
+                raise ValueError(str(exc)) from exc
+
         if self.delete_mode == DeleteMode.archive:
             raise ValueError(
                 "Deletion archiving is not implemented yet. Choose 'none' to leave "

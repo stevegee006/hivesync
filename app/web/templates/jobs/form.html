@@ -200,7 +200,56 @@
     </div>
   </section>
 
-  <section class="grid grid-cols-3 gap-3 border-t border-slate-800 pt-6">
+  <section class="grid grid-cols-1 gap-6 border-t border-slate-800 pt-6 lg:grid-cols-2">
+    <div>
+      <label for="schedule_cron" class="block text-sm text-slate-400">Schedule</label>
+      <div class="mt-1 flex gap-2">
+        <input id="schedule_cron" name="schedule_cron" placeholder="30 2 * * *"
+               value="{{ job.schedule_cron or '' if job else '' }}"
+               class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        <input id="timezone" name="timezone" value="{{ job.timezone if job else 'UTC' }}"
+               class="w-56 rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+      </div>
+      <p class="mt-1 text-xs text-slate-500">
+        Five fields: minute, hour, day of month, month, day of week. Leave empty
+        to run only on demand. A scheduled run is a live run.
+      </p>
+
+      {# Concrete fire times rather than prose: they are unambiguous for any
+         expression, and they come from the same trigger the scheduler uses, so
+         the preview cannot disagree with what happens. #}
+      {% if schedule_preview %}
+        {% if not schedule_preview.valid %}
+        <p class="mt-2 text-xs text-red-300">{{ schedule_preview.error }}</p>
+        {% elif schedule_preview.fire_times %}
+        <div class="mt-2 rounded border border-slate-800 bg-slate-900/50 px-3 py-2">
+          <p class="text-xs uppercase tracking-wide text-slate-500">Next five runs</p>
+          <ul class="mt-1 space-y-0.5">
+            {% for moment in schedule_preview.formatted %}
+            <li class="font-mono text-xs text-slate-300">{{ moment }}</li>
+            {% endfor %}
+          </ul>
+          {% if next_run %}
+          <p class="mt-2 text-xs text-slate-500">
+            Scheduler has it queued for
+            <span class="font-mono">{{ next_run.strftime('%Y-%m-%d %H:%M:%S %Z') }}</span>.
+          </p>
+          {% endif %}
+        </div>
+        {% endif %}
+      {% endif %}
+
+      <label class="mt-3 flex items-center gap-2 text-sm text-slate-300">
+        <input type="checkbox" name="enabled" value="true"
+               {% if not job or job.enabled %}checked{% endif %}>
+        <span>Enabled</span>
+      </label>
+      <p class="mt-1 text-xs text-slate-500">
+        A disabled job keeps its schedule but never fires.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-3 gap-3 self-start">
     <div>
       <label for="transfers" class="block text-sm text-slate-400">Transfers</label>
       <input id="transfers" name="transfers" type="number" min="1" max="64"
@@ -218,6 +267,7 @@
       <input id="bwlimit" name="bwlimit" value="{{ job.bwlimit or '' if job else '' }}"
              placeholder="10M"
              class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+    </div>
     </div>
   </section>
 
