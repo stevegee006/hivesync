@@ -1,35 +1,118 @@
-# Builds and publishes the image to Docker Hub on a version tag.
+# Test, verify the image actually runs, then publish to Docker Hub on a version tag.
 #
-# Requires two repository secrets:
-#   DOCKERHUB_USERNAME  your Docker Hub account
-#   DOCKERHUB_TOKEN     a Docker Hub access token, not your password
+# Publishing requires two repository secrets:
+#   DOCKERHUB_USERNAME  the Docker Hub account
+#   DOCKERHUB_TOKEN     a Docker Hub access token, not the account password
 #
-# Pull requests build but do not push, so a fork cannot publish.
+# Only a v* tag publishes. Pushes to main and pull requests build, test and
+# verify without pushing, so a broken image cannot be tagged, and a fork cannot
+# publish.
+#
+# CI registers QEMU binfmt itself, so multi-arch works here without the manual
+# setup a local workstation needs.
 name: docker-publish
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
 
 jobs:
-  build:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Lint
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+
+      - name: Types
+        run: python -m mypy app
+
+      - name: Unit tests
+        run: python -m pytest -m "not integration"
+
+  image:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
 
+      # Only KEY=VALUE lines. A plain `cat` would append the comments and blank
+      # lines in versions.env and fail the step.
       - name: Read pinned versions
-        run: cat versions.env >> "$GITHUB_ENV"
+        run: grep -E '^[A-Z0-9_]+=.+$' versions.env >> "$GITHUB_ENV"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
+      - name: Decide whether this run publishes
+        id: gate
+        run: echo "publish=${{ startsWith(github.ref, 'refs/tags/v') }}" >> "$GITHUB_OUTPUT"
+
+      # Single arch so it can be loaded into the local daemon and actually run.
+      # The layers are cached, so the multi-arch build below reuses this work.
+      - name: Build amd64 image for verification
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: hivesync:ci
+          build-args: |
+            RCLONE_VERSION=${{ env.RCLONE_VERSION }}
+            RCLONE_SHA256_AMD64=${{ env.RCLONE_SHA256_AMD64 }}
+            RCLONE_SHA256_ARM64=${{ env.RCLONE_SHA256_ARM64 }}
+            TAILWIND_VERSION=${{ env.TAILWIND_VERSION }}
+            HTMX_VERSION=${{ env.HTMX_VERSION }}
+            ALPINE_VERSION=${{ env.ALPINE_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # M0's acceptance criterion, asserted in CI: the container serves a login
+      # page and health reports the pinned rclone and lftp versions.
+      - name: Verify the image serves and reports its engine versions
+        run: |
+          set -euo pipefail
+          key=$(python3 -c "import secrets,base64;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())")
+          docker run -d --name hivesync-ci -p 8080:8080 \
+            -e HIVESYNC_SECRET_KEY="$key" \
+            -e HIVESYNC_ADMIN_PASSWORD=ci-verification-only \
+            hivesync:ci
+          for _ in $(seq 1 60); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' hivesync-ci)
+            [ "$status" = "healthy" ] && break
+            [ "$(docker inspect -f '{{.State.Status}}' hivesync-ci)" = "exited" ] && break
+            sleep 2
+          done
+          docker logs hivesync-ci
+          test "$(docker inspect -f '{{.State.Health.Status}}' hivesync-ci)" = "healthy"
+          curl -fsS localhost:8080/api/health -o health.json
+          cat health.json
+          jq -e '.status == "ok"' health.json > /dev/null
+          jq -e '.rclone.matches_expected == true' health.json > /dev/null
+          jq -e '.lftp.version | length > 0' health.json > /dev/null
+          curl -fsS localhost:8080/login | grep -q "Sign in"
+          test "$(docker exec hivesync-ci sh -c 'grep ^Uid: /proc/1/status | tr -s "\t" " " | cut -d" " -f2')" = "1000"
+          docker rm -f hivesync-ci
+
       - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
+        if: steps.gate.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -46,13 +129,16 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # Guarantees at least one tag on non-tag runs, where the semver
+            # patterns match nothing and build-push-action would have none.
+            type=sha,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
 
-      - name: Build and push
+      - name: Build and push multi-arch
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ steps.gate.outputs.publish == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |

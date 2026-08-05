@@ -176,10 +176,35 @@ If arm64 is not needed, `--platform linux/amd64` alone skips the emulation
 requirement entirely. The GitHub Actions workflow needs neither prerequisite: it
 runs `docker/setup-qemu-action` and authenticates from repository secrets.
 
-For automated publishing, `.github/workflows/docker-publish.yml` does the same on a
-tag push. It needs two repository secrets, `DOCKERHUB_USERNAME` and
-`DOCKERHUB_TOKEN`, where the token is a Docker Hub access token rather than a
-password.
+### Publishing from CI, the easier path
+
+`.github/workflows/docker-publish.yml` needs neither prerequisite above: it
+registers QEMU itself and authenticates from repository secrets. Set those two
+secrets once, using a Docker Hub **access token**, not your password:
+
+```bash
+gh secret set DOCKERHUB_USERNAME
+```
+
+```bash
+gh secret set DOCKERHUB_TOKEN
+```
+
+Create the token at https://app.docker.com/settings/personal-access-tokens with
+Read and Write scope.
+
+Then publishing is a tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The workflow runs on every push to `main` and every pull request as well, but
+**only a `v*` tag publishes**. Other runs build, test, and verify the image
+without pushing, so a broken image cannot reach the registry. The verification
+step starts the container and asserts that health returns `ok` with a matching
+rclone version, that `/login` serves, and that PID 1 is not root, which is M0's
+acceptance criterion checked on every commit.
 
 ## Testing
 
