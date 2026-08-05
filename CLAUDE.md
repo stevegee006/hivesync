@@ -212,7 +212,8 @@ Spikes run before M1 design. These replace assumptions in SPEC.md sections 5.3, 
 - **`sftp` exposes `key_pem`**, so an SSH private key can be passed inline through an env var. No temp key file on disk. `key_pem` is `Sensitive` but not `IsPassword`, so it is passed raw and must be redacted, not obscured.
 - **`sftp.known_hosts_file` defaults to empty, so rclone does not verify host keys by default.** SPEC section 15's "verification on by default" requires explicitly supplying a known_hosts file. Nothing is verified until we do.
 - **`smb` has no `share` option**, confirming SPEC 5.1: the share is the first path element of `remote:Share/path`.
-- Consequence for SPEC 5.3: the temp file fallback looks unnecessary. Inline remotes use env vars, imported remotes pass `--config /config/rclone/rclone.conf` directly and read only, and SSH keys use `key_pem`. **One unknown remains:** whether env var remotes coexist with `--config <user file>` in a single invocation, which a job pairing an inline endpoint with an imported one needs. Verify before ruling the temp file path out.
+- **Env var remotes and `--config <user file>` coexist in one invocation.** Verified: both appear in `listremotes`, both resolve, and the user file is never written. A job pairing an inline endpoint with an imported one needs no special handling.
+- **Consequence for SPEC 5.3: the temp file fallback is not needed and is not implemented.** Inline remotes use env vars, imported remotes pass `--config /config/rclone/rclone.conf` read only, SSH keys use `key_pem`. There is therefore no code path that writes credential material to disk at all, which is a stronger guarantee than the spec asked for. If a future backend cannot be expressed through env vars, reconsider, and record it here.
 
 ## Open spec issues carried forward
 

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import base64
 import hmac
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from hashlib import sha256
 from typing import Final
 
@@ -127,5 +129,65 @@ class SecretBox:
 
     def __repr__(self) -> str:
         return "SecretBox(key=<redacted>)"
+
+    __str__ = __repr__
+
+
+REDACTED = "***REDACTED***"
+
+# Values shorter than this are not substring-redacted, because masking every
+# occurrence of a two character string would corrupt unrelated output. A secret
+# that short is refused at input validation instead.
+_MIN_REDACTABLE_LENGTH: Final[int] = 4
+
+# Env var names whose values are masked wholesale, regardless of content. Belt
+# and braces alongside value based redaction: if a secret is somehow not in the
+# known set, the variable carrying it is still masked.
+_SENSITIVE_ENV_RE: Final[re.Pattern[str]] = re.compile(
+    r"(PASS|PASSWORD|SECRET|TOKEN|KEY_PEM|KEY_FILE_PASS|CREDENTIAL)", re.IGNORECASE
+)
+
+
+class Redactor:
+    """Removes known secret values from text, argv lists and environments.
+
+    Built per operation from the plaintext and obscured forms of every secret
+    that operation touches. The obscured form matters as much as the plaintext:
+    `rclone obscure` is reversible with `rclone reveal`, so an obscured password
+    is still a credential and must never be logged or stored.
+
+    Redaction is a backstop, not the primary defence. The primary defence is that
+    secrets are passed to rclone through the environment and never appear in a
+    command line, so a stored command has nothing to leak in the first place.
+    """
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Iterable[str]) -> None:
+        unique = {value for value in values if value and len(value) >= _MIN_REDACTABLE_LENGTH}
+        # Longest first, so a secret that contains a shorter one is masked whole
+        # rather than being partially replaced and left recognisable.
+        self._values = sorted(unique, key=len, reverse=True)
+
+    def redact(self, text: str) -> str:
+        for value in self._values:
+            text = text.replace(value, REDACTED)
+        return text
+
+    def redact_argv(self, argv: Sequence[str]) -> list[str]:
+        return [self.redact(part) for part in argv]
+
+    def redact_env(self, env: Mapping[str, str]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for name, value in env.items():
+            result[name] = REDACTED if _SENSITIVE_ENV_RE.search(name) else self.redact(value)
+        return result
+
+    def command_line(self, argv: Sequence[str]) -> str:
+        """A redacted, human readable command for JobRun.command_redacted."""
+        return " ".join(self.redact_argv(argv))
+
+    def __repr__(self) -> str:
+        return f"Redactor(values=<{len(self._values)} redacted>)"
 
     __str__ = __repr__
