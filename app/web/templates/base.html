@@ -26,8 +26,22 @@
         <span class="text-lg font-semibold tracking-tight text-slate-100">HiveSync</span>
         <span class="font-mono text-xs text-slate-500">{{ app_version }}</span>
       </a>
-      <nav class="flex items-center gap-4 text-sm text-slate-400">
+      <nav class="flex flex-wrap items-center gap-4 text-sm text-slate-400">
         {% if user %}
+        {# Every screen SPEC section 13 lists, reachable from every screen. Until
+           M7 the pages existed with nothing linking to them. #}
+        {% for label, href in [
+          ('Jobs', '/jobs'),
+          ('Connections', '/connections'),
+          ('Credentials', '/credentials'),
+          ('Filters', '/filter-presets'),
+          ('Settings', '/settings'),
+        ] %}
+        <a href="{{ href }}"
+           class="hover:text-slate-200 {% if nav_active == href %}text-slate-100{% endif %}">
+          {{ label }}
+        </a>
+        {% endfor %}
         <span class="font-mono text-xs text-slate-500">{{ user.username }}</span>
         <a href="/account/password" class="hover:text-slate-200">Password</a>
         <form method="post" action="/api/auth/logout">

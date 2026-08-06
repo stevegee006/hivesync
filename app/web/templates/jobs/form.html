@@ -337,6 +337,27 @@
       <p class="mt-1 text-xs text-slate-500">
         A disabled job keeps its schedule but never fires.
       </p>
+
+      <div class="mt-4">
+        <label for="notify_on" class="block text-sm text-slate-400">Notify</label>
+        <select id="notify_on" name="notify_on"
+                class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          {% for value, label in [
+            ('never', 'never'),
+            ('failure', 'when a run fails'),
+            ('always', 'after every run'),
+          ] %}
+          <option value="{{ value }}" {% if job and job.notify_on.value == value %}selected{% endif %}>
+            {{ label }}
+          </option>
+          {% endfor %}
+        </select>
+        <p class="mt-1 text-xs text-slate-500">
+          Where notifications go is set once, in
+          <a href="/settings" class="underline">Settings</a>. Nothing is sent
+          until a target is configured there.
+        </p>
+      </div>
     </div>
 
     <div class="grid grid-cols-3 gap-3 self-start">

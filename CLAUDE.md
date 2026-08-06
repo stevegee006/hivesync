@@ -12,8 +12,8 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | none, M7 not started |
-| Milestones complete | M0, M1, M2, M3, M4, M5, M6 |
+| Milestone in progress | none, M8 not started |
+| Milestones complete | M0, M1, M2, M3, M4, M5, M6, M7 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
@@ -99,19 +99,23 @@ docker compose up --build
 
 ## Architecture summary
 
-Target layout. Modules marked `todo` do not exist yet: they are created by the
-milestone that fills them, because empty stub modules are noise that lint has to be
-told to ignore.
+Every module below exists. `engines/lftp.py` is the only one from SPEC that does
+not, and it is gated on open question 1 rather than scheduled.
 
 ```
 app/
   main.py            app factory, startup checks, exception handlers
   config.py          pydantic-settings, env only, never touches key material
+  preferences.py     the settings an operator changes at runtime, in the DB
   db.py              engine, session factory, SQLite pragmas
   logging_conf.py    structured JSON to stdout
   binaries.py        rclone and lftp version discovery for /api/health
   security.py        argon2id, sessions, bootstrap admin
   crypto.py          the ONLY module that touches secrets
+  notify.py          webhook and ntfy delivery, never raises into a run
+  metrics.py         Prometheus text, rendered from the run history
+  portable.py        config export and import, never any credential material
+  filter_presets.py  built-in presets, re-seeded at every startup
   models/            SQLAlchemy models, full SPEC section 4 schema
   schemas/           Pydantic request/response models
   probe.py           connection test and browse orchestration, host key trust
@@ -119,23 +123,31 @@ app/
     process.py       subprocess primitive, timeouts, redacted capture
     rcloneconf.py    remote rendering via env vars, obscure, known_hosts, ini parse
     inspect.py       listremotes, config providers, backend features, lsd, lsf
-    base.py          todo, M2. SyncEngine interface: plan(), execute()
-    rclone.py        todo, M2. RcloneEngine
-    parsers.py       todo, M2. --combined and --use-json-log parsing
-    lftp.py          todo, M7, optional
+    base.py          SyncEngine interface: plan(), execute()
+    rclone.py        RcloneEngine, one way
+    bisync.py        bidirectional, with its own flag semantics
+    parsers.py       --use-json-log and check category parsing
+    lftp.py          does not exist. Gated on open question 1, not on a milestone
   capabilities.py    probe interpretation and the two-endpoint intersection
-  jobs/              todo, M3 and M4
+  jobs/
+    planner.py       dry run lifecycle, run creation, overlap refusal
     runner.py        run lifecycle, subprocess supervision, cancellation
-    scheduler.py     APScheduler wiring
+    scheduler.py     APScheduler wiring, plus the nightly maintenance pass
     archive.py       backup-dir path computation and validation
+    retention.py     archive, log and run-history pruning
+    events.py        in-process broker for live output
+    cron.py          expression validation and fire-time preview
   api/               route modules mirroring SPEC.md section 12
-                     health, auth, connections, credentials, rclone
+                     health, auth, connections, credentials, rclone, jobs,
+                     presets, settings, metrics
                      deps.py provides CurrentUser, so auth resolves before
                      body validation
   web/               Jinja templates, HTMX partials
-  notify.py          todo, M7
-  metrics.py         todo, M7
 ```
+
+`api/metrics.py` is mounted at the application root, not under `/api`: `/metrics`
+is where a scrape config looks. It is still authenticated, by session or by
+`HIVESYNC_METRICS_TOKEN`, because job names are share names.
 
 Startup order, which is deliberate and lives in `main.create_app`:
 
@@ -220,6 +232,12 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, ux, hidden form inputs still submit. Switching a job away from archiving kept sending the old archive path, which the schema then refused because an archive path is only valid with archiving on. The payload builder clears it rather than the template removing the input, so the value survives a mode toggle that ends up back on archive.
 - 2026-08-05, alpine, `x-cloak` does nothing without a `[x-cloak] { display: none }` rule, which nothing defined. Templates had used the attribute since M1, so every panel Alpine was about to hide was painted first and then removed. The rule is now in `tailwind.src.css`.
 
+- 2026-08-06, rclone, **a leading `**/` in a filter does the opposite of what it looks like.** `**/@eaDir/**` requires at least one directory in front of the name, so it does not match `@eaDir` at the top of the synced folder, which is exactly where DSM puts one. An unanchored pattern already matches at every level: `@eaDir/**` is the correct form, and a leading slash anchors to the sync root where that is deliberate (`/#recycle/**`). The built-in presets shipped with the broken form from M2 until M7 and silently failed on the most likely case. Pinned by `test_the_dsm_preset_excludes_metadata_at_the_top_of_the_tree`, which runs the real binary.
+- 2026-08-06, sqlalchemy, **`dict(session.execute(...))` does not iterate rows.** `Result` has a `keys()` method, so `dict()` takes the mapping path, tries to subscript the Result and raises `'ChunkedIteratorResult' object is not subscriptable`. It reads as though it works right up until it runs. `.tuples()` does not help: it is a typing-only wrapper that returns the same object. Iterate explicitly.
+- 2026-08-06, httpx, **header values are encoded as ascii, not latin-1**, and a non-ascii value raises `UnicodeEncodeError` and fails the whole request. A job name is free text and ntfy carries the title in a header, so the title is degraded to ascii and the real name is repeated in the UTF-8 body.
+- 2026-08-06, testing, the SMB fixture is a **persistent volume**, shared across tests and across runs until `docker compose down -v`. A test asserting "two files are new" fails on the second run for reasons that look like a product bug. Give each run a unique destination subpath rather than trusting the fixture to be empty.
+- 2026-08-06, ux, a field with no control on the form submits the schema default on every save. This has now happened three times: `conflict_resolve`, `notify_on`, and the archive fields. `tests/test_job_form.py` covers each. When adding a column, add the control in the same change.
+
 ### M1 acceptance status, verified 2026-08-05
 
 All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,
@@ -236,6 +254,72 @@ FTP and SMB fixtures, ruff and mypy clean.
 Remaining for M1: nothing blocking. The connection editor, credentials page,
 directory browser and compatibility page are built; the job editor that will
 consume the intersection logic belongs to a later milestone.
+
+### M7 polish, verified 2026-08-06
+
+353 unit tests, 65 integration tests against live SFTP, FTP and SMB fixtures.
+
+**The `lftp` engine is still not built.** SPEC gates it on open question 1, which
+is unanswered, so the binary stays in the image and jobs selecting it are refused
+with a message. Building an engine nobody has established a need for is how the
+one deletion path nothing tests gets written.
+
+**Apprise was declined.** SPEC 16 says "if it is cheap to add". It is a large
+dependency tree wrapping HTTP calls this already makes, and every service it adds
+is one nothing here can test. Webhook and ntfy are implemented directly.
+
+**Notifications are sent after the run record is committed, never inside it.** A
+slow endpoint would otherwise hold a SQLite write lock for the length of its
+timeout, and a failed notification must never change what a run recorded. Proved
+by `test_a_broken_endpoint_does_not_change_the_run`.
+
+**Metrics are aggregates over `job_run`, not in-process counters.** A counter held
+in memory resets on restart, and a container that restarts nightly reports a
+sawtooth that means nothing. The cost is that this module owns the Prometheus text
+format by hand, which is why `test_metrics.py` parses the output rather than
+grepping it.
+
+**`/metrics` is authenticated**, by session or by `HIVESYNC_METRICS_TOKEN`. The
+labels carry job names, which in this application are the names people give their
+shares. This partly answers open issue 7; `/api/health` still discloses binary
+versions without a session, and that stays for M8.
+
+**Retention only prunes what it can be sure of.** Off unless a number is set,
+whole run directories only, only names matching the run stamp, only local paths,
+and never the flat suffix layout. Everything else is reported as unprunable with
+the path, so it can be cleared by hand. Deleting from an archive is the one
+operation here with nothing behind it.
+
+**An export contains no credential material, including ciphertext.** Fernet
+ciphertext is only as strong as a key that lives in the compose file people commit
+next to it. Credentials are exported as names, and the import re-links by name and
+warns loudly about each one that is missing. Probe output (capabilities, host keys,
+last-test results) is excluded too: it describes an environment, and a host key is
+a trust decision that has to be made again on the machine doing the trusting.
+
+Acceptance criteria, all five met:
+
+1. A failed run posts exactly one webhook with the specified payload; a successful
+   run under "failure only" posts none; a target that times out fails the
+   notification and not the run. Against a real socket, not a mocked httpx.
+2. `/metrics` parses as Prometheus text format and the counters move by exactly
+   one run's counts. Dry runs do not move them.
+3. A 30 day prune removes archive directories older than 30 days, keeps the
+   newest, and touches nothing outside the archive base. Asserted on filesystem
+   state.
+4. An export imports into an empty instance reproducing every connection, job and
+   preset, with zero `Credential` rows and no secret anywhere in the file.
+5. The README walkthrough is executed step by step against the SMB fixture, through
+   the same web forms a reader would use. `tests/test_readme_walkthrough.py`.
+
+Criterion 5 found a real defect in step 6's advice, and the same defect in the
+shipped Synology preset: see the `**/` filter gotcha above.
+
+Also fixed here, because they were false rather than merely unpolished: the
+dashboard still said jobs were not built, the jobs list still said live syncing
+arrived in a later milestone, nothing linked to the connections, credentials or
+compatibility pages, and `x-cloak` had never been defined so every panel Alpine
+was about to hide was painted first.
 
 ### M6 deletion archiving, verified against rclone 1.74.4 and real SMB
 
@@ -486,7 +570,8 @@ Raised at M0, resolved at the milestone named. Do not rediscover these.
    basis; it needs last-run throughput or should be dropped.
 7. **Unauthenticated `/api/health` discloses binary versions. M8.** Kept for now
    because M0's acceptance criterion requires it. Split bare liveness from version
-   detail. Same decision needed for `/metrics`.
+   detail. **`/metrics` was resolved at M7**: it requires a session or
+   `HIVESYNC_METRICS_TOKEN`, because its labels carry job and share names.
 8. **CSRF, login rate limiting, host key pinning. M8.** Until then the app is not
    safe to expose beyond a trusted network, which the README states.
 

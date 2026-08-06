@@ -28,6 +28,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import __version__, binaries, crypto, filter_presets, security, web
 from app.api import api_router
+from app.api import metrics as metrics_api
 from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, session_scope
 from app.jobs.planner import PlanRunner
@@ -161,10 +162,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # test client never enters the lifespan context.
     app.state.binaries = binaries.collect(settings.expected_rclone_version)
     app.state.plan_runner = PlanRunner(
-        app.state.session_factory, box=app.state.secrets, settings=settings
+        app.state.session_factory,
+        box=app.state.secrets,
+        settings=settings,
+        max_workers=settings.max_concurrent_runs,
     )
     app.state.live_runner = LiveRunner(
-        app.state.session_factory, box=app.state.secrets, settings=settings
+        app.state.session_factory,
+        box=app.state.secrets,
+        settings=settings,
+        max_workers=settings.max_concurrent_runs,
     )
     # Started in the lifespan, not here: create_app runs during tests that never
     # want a background thread firing real syncs.
@@ -182,6 +189,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.include_router(api_router, prefix="/api")
+    # At the root, not under /api: this is where a Prometheus scrape config
+    # looks. See app/api/metrics.py for why it still requires authentication.
+    app.include_router(metrics_api.router)
     app.include_router(web.router)
     app.mount("/static", StaticFiles(directory=str(web.STATIC_DIR)), name="static")
 

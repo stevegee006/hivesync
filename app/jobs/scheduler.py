@@ -30,11 +30,13 @@ import logging
 from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app import preferences
 from app.config import Settings
-from app.jobs import cron, planner
+from app.jobs import cron, planner, retention
 from app.jobs.runner import LiveRunner
 from app.models import Job, JobRun, RunMode, RunStatus, RunTrigger, utcnow
 
@@ -43,6 +45,13 @@ logger = logging.getLogger(__name__)
 # SPEC section 9. A fire that is later than this is dropped rather than run, so
 # a container that was down overnight does not start a sync at breakfast.
 DEFAULT_MISFIRE_GRACE_SECONDS = 300
+
+
+MAINTENANCE_KEY = "hivesync-maintenance"
+# Daily, at a time nothing else is scheduled for. Retention deletes archived
+# files, so it runs on its own rather than sharing a fire with a sync.
+MAINTENANCE_HOUR = 3
+MAINTENANCE_MINUTE = 17
 
 
 def job_key(job_id: int) -> str:
@@ -99,6 +108,38 @@ class JobScheduler:
         self._scheduler.remove_all_jobs()
         for job in jobs:
             self._register(job)
+        self._register_maintenance()
+
+    def _register_maintenance(self) -> None:
+        """The daily housekeeping pass: retention, logs, run history.
+
+        Registered here rather than in start() because reload() clears every job,
+        so a job edit would otherwise silently unschedule maintenance until the
+        next restart.
+        """
+        self._scheduler.add_job(
+            self._maintain,
+            trigger=CronTrigger(
+                hour=MAINTENANCE_HOUR,
+                minute=MAINTENANCE_MINUTE,
+                timezone=self._settings.timezone or "UTC",
+            ),
+            id=MAINTENANCE_KEY,
+            name="Maintenance",
+            replace_existing=True,
+            coalesce=True,
+            misfire_grace_time=self._misfire_grace,
+            max_instances=1,
+        )
+
+    def _maintain(self) -> None:
+        session = self._session_factory()
+        try:
+            retention.run(session, self._settings, preferences.load(session))
+        except Exception:  # a scheduler thread must never die silently
+            logger.exception("Maintenance pass failed")
+        finally:
+            session.close()
 
     def _register(self, job: Job) -> None:
         if not job.enabled or not (job.schedule_cron or "").strip():

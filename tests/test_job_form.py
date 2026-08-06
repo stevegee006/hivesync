@@ -11,7 +11,15 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import Settings
 from app.db import create_db_engine
-from app.models import ArchiveLayout, ConflictResolve, Connection, ConnectionType, DeleteMode, Job
+from app.models import (
+    ArchiveLayout,
+    ConflictResolve,
+    Connection,
+    ConnectionType,
+    DeleteMode,
+    Job,
+    NotifyOn,
+)
 
 # Deliberately not tmp_path: these are display paths, never opened, and a
 # Windows tmp_path would put backslashes into a form the container renders with
@@ -198,3 +206,33 @@ def test_an_unchecked_access_marker_stays_unchecked(
         _form(source_id, dest_id, direction="bidirectional", delete_mode="none"),
     )
     assert _saved(settings, job_id).check_access is False
+
+
+def test_editing_a_job_keeps_its_notification_setting(
+    authed_client: TestClient, settings: Settings
+) -> None:
+    """Same failure mode as the conflict policy: a field with no control on the
+    form submits the schema default on every save."""
+    source_id, dest_id = _connections(settings)
+    job_id = _create(authed_client, _form(source_id, dest_id, notify_on="always"))
+    assert _saved(settings, job_id).notify_on == NotifyOn.always
+
+    response = authed_client.post(
+        f"/jobs/{job_id}",
+        data=_form(source_id, dest_id, name="Renamed", notify_on="always"),
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert _saved(settings, job_id).notify_on == NotifyOn.always
+
+
+def test_the_form_offers_the_notification_control(
+    authed_client: TestClient, settings: Settings
+) -> None:
+    source_id, dest_id = _connections(settings)
+    job_id = _create(authed_client, _form(source_id, dest_id, notify_on="never"))
+
+    page = authed_client.get(f"/jobs/{job_id}").text
+
+    assert 'name="notify_on"' in page
+    assert 'value="never" selected' in page

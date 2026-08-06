@@ -21,27 +21,34 @@ from app.models import FilterPreset
 
 logger = logging.getLogger(__name__)
 
+# A pattern with no leading slash already matches at every level, **including
+# the root**. A leading `**/` does the opposite of what it looks like: it
+# requires at least one directory before the name, so `**/@eaDir/**` silently
+# misses the `@eaDir` at the top of the synced folder. Verified against rclone
+# 1.74.4, which is how this was found: the share root is the most likely place
+# for one, so the preset was missing the case it existed for. A leading slash
+# anchors to the sync root and is used only where that is deliberate.
 BUILTIN_PRESETS: dict[str, list[str]] = {
     # @eaDir holds thumbnails and index data and appears at every directory
     # level. #recycle appears at the share root when the shared folder Recycle
-    # Bin is enabled.
+    # Bin is enabled, so it is the one pattern here that is anchored.
     "Synology / DSM": [
-        "**/@eaDir/**",
-        "**/@tmp/**",
+        "@eaDir/**",
+        "@tmp/**",
         "/#recycle/**",
-        "**/#snapshot/**",
-        "**/.DS_Store",
-        "**/Thumbs.db",
-        "**/desktop.ini",
+        "#snapshot/**",
+        ".DS_Store",
+        "Thumbs.db",
+        "desktop.ini",
     ],
     "Common junk": [
-        "**/.DS_Store",
-        "**/Thumbs.db",
-        "**/desktop.ini",
-        "**/*.tmp",
-        "**/~$*",
-        "**/.Trash-*/**",
-        "**/lost+found/**",
+        ".DS_Store",
+        "Thumbs.db",
+        "desktop.ini",
+        "*.tmp",
+        "~$*",
+        ".Trash-*/**",
+        "lost+found/**",
     ],
 }
 

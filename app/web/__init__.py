@@ -10,28 +10,37 @@ Alpine hides irrelevant form fields, and both degrade to a plain form post.
 
 from __future__ import annotations
 
+import json
 import logging
+from contextlib import suppress
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
+from jinja2.runtime import Context
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import __version__, capabilities, probe, security
+from app import __version__, capabilities, notify, portable, probe, security
+from app import preferences as preferences_store
 from app.api.auth import safe_redirect_target
 from app.api.connections import capability_summary, to_read
 from app.api.jobs import _apply as apply_job
 from app.api.jobs import describe
+from app.api.settings import SettingsUpdate
+from app.api.settings import apply_update as apply_settings_update
 from app.binaries import BinaryReport
 from app.crypto import SecretBox
 from app.db import get_session
 from app.engines import inspect, rclone, rcloneconf
 from app.engines.rcloneconf import RemoteConfigError
-from app.jobs import archive, cron, planner
+from app.jobs import archive, cron, planner, retention
 from app.models import (
     ArchiveLayout,
     CompareMode,
@@ -46,11 +55,13 @@ from app.models import (
     Job,
     JobRun,
     JobRunChange,
+    NotifyOn,
     RcloneMode,
     RunMode,
     RunStatus,
     RunTrigger,
 )
+from app.preferences import NotifyTarget
 from app.schemas.connection import ConnectionCreate
 from app.schemas.credential import CredentialCreate
 from app.schemas.job import JobCreate, JobFilters
@@ -63,6 +74,33 @@ STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 router = APIRouter(include_in_schema=False)
+
+
+@pass_context
+def _localtime(context: Context, value: datetime | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Render a stored timestamp in the configured timezone.
+
+    Everything is stored in UTC, which is right, and shown in local time, which
+    is what someone comparing a run against their own logs needs. Naive values
+    are treated as UTC: SQLite hands back naive datetimes, and assuming local
+    would shift every historical timestamp by the whole offset.
+
+    The zone comes from the render context rather than a module global so tests
+    and a second application instance cannot disagree with the request they are
+    serving.
+    """
+    if value is None:
+        return "never"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    zone: tzinfo = UTC
+    # An unknown zone must not blank out every timestamp on the page.
+    with suppress(ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo(str(context.get("timezone") or "UTC"))
+    return value.astimezone(zone).strftime(fmt)
+
+
+templates.env.filters["localtime"] = _localtime
 
 _LOGIN_ERRORS = {
     "invalid": "That username and password combination is not valid.",
@@ -83,6 +121,8 @@ def _base_context(request: Request) -> dict[str, Any]:
         "request": request,
         "app_version": __version__,
         "auth_mode": request.app.state.settings.auth_mode,
+        "timezone": request.app.state.settings.timezone,
+        "nav_active": request.url.path,
         "rclone_version": report.rclone.version,
         "lftp_version": report.lftp.version,
         "min_password_length": security.MIN_PASSWORD_LENGTH,
@@ -133,9 +173,30 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> Any:
         return RedirectResponse(url="/account/password", status_code=303)
     context = _base_context(request)
     context["user"] = user
-    context["connection_count"] = session.scalar(
-        select(Connection).with_only_columns(Connection.id).limit(1)
-    )
+
+    # SPEC 13 screen 1: last status, last run time, next run time, quick actions
+    # and a live-runs strip. Until M7 this page still said jobs were not built.
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None and not scheduler.running:
+        scheduler = None
+    jobs = list(session.scalars(select(Job).order_by(Job.name)))
+    context["cards"] = [
+        {
+            "job": job,
+            "last_run": next(iter(planner.latest_runs(session, job.id, limit=1)), None),
+            "next_run": scheduler.next_run_time(job.id) if scheduler else None,
+        }
+        for job in jobs
+    ]
+
+    by_id = {job.id: job for job in jobs}
+    context["running"] = [
+        {"run": run, "job": by_id[run.job_id]}
+        for run in session.scalars(
+            select(JobRun).where(JobRun.status == RunStatus.running).order_by(JobRun.started_at)
+        )
+        if run.job_id in by_id
+    ]
     return templates.TemplateResponse(request, "dashboard.html", context)
 
 
@@ -672,10 +733,12 @@ def _job_payload(form: dict[str, str], preset_ids: list[int]) -> JobCreate:
         delete_mode=delete_mode,
         archive_base=archive_base,
         archive_layout=ArchiveLayout(form.get("archive_layout") or "timestamped_dir"),
-        # These two were absent from the form until now, so every web edit of a
-        # bidirectional job silently reset its conflict policy to the default.
+        # These were absent from the form until now, so every web edit of a
+        # bidirectional job silently reset its conflict policy to the default,
+        # and every edit of any job reset when it notifies.
         conflict_resolve=ConflictResolve(form.get("conflict_resolve") or "newer"),
         check_access=form.get("check_access") == "true",
+        notify_on=NotifyOn(form.get("notify_on") or "failure"),
         max_delete_pct=number("max_delete_pct") or 0,
         transfers=number("transfers"),
         checkers=number("checkers"),
@@ -871,3 +934,255 @@ def run_detail_page(
     context["changes"] = changes
     context["active_action"] = action or ""
     return templates.TemplateResponse(request, "runs/detail.html", context)
+
+
+# --------------------------------------------------------------------------
+# Settings and filter presets
+# --------------------------------------------------------------------------
+
+
+def _settings_context(
+    request: Request,
+    session: Session,
+    *,
+    message: str | None = None,
+    error: str | None = None,
+    test_result: Any = None,
+    maintenance: Any = None,
+) -> dict[str, Any]:
+    context = _page_context(request, session)
+    settings = request.app.state.settings
+    preferences = preferences_store.load(session)
+    context["preferences"] = preferences
+    # Never the URL itself: it can carry a token, and a page that renders one
+    # hands it to anyone who can see the screen.
+    context["webhook_configured"] = bool(preferences.notify_webhook_url)
+    context["max_concurrent_runs"] = settings.max_concurrent_runs
+    context["metrics_token_set"] = bool(settings.metrics_token)
+    context["message"] = message
+    context["error"] = error
+    context["test_result"] = test_result
+    context["maintenance"] = maintenance
+
+    # What the next nightly pass would remove, so retention is legible before it
+    # deletes anything rather than after.
+    plans = retention.plan(session, preferences).archives
+    context["retention_plans"] = [plan for plan in plans if plan.directories]
+    context["retention_notes"] = [
+        plan for plan in plans if plan.skipped_reason and plan.retention_days
+    ]
+    return context
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(
+    request: Request, saved: str | None = None, session: Session = Depends(get_session)
+) -> Any:
+    context = _settings_context(request, session, message="Settings saved." if saved else None)
+    return templates.TemplateResponse(request, "settings.html", context)
+
+
+@router.post("/settings", response_class=HTMLResponse)
+async def save_settings_form(request: Request, session: Session = Depends(get_session)) -> Any:
+    security.require_user(request, session)
+    form = {key: str(value) for key, value in (await request.form()).items()}
+
+    def number(name: str) -> int | None:
+        raw = (form.get(name) or "").strip()
+        return int(raw) if raw.isdigit() else None
+
+    try:
+        update = SettingsUpdate(
+            notify_target=cast("NotifyTarget", form.get("notify_target") or "none"),
+            # An empty box means "keep what is stored". The stored URL is never
+            # rendered back into the form, so treating empty as "clear" would wipe it
+            # every time anything else on this page was saved.
+            notify_webhook_url=(form.get("notify_webhook_url") or "").strip() or None,
+            clear_webhook_url=form.get("clear_webhook_url") == "true",
+            notify_ntfy_server=(form.get("notify_ntfy_server") or "").strip() or None,
+            notify_ntfy_topic=(form.get("notify_ntfy_topic") or "").strip() or None,
+            notify_timeout_seconds=number("notify_timeout_seconds"),
+            base_url=(form.get("base_url") or "").strip() or None,
+            archive_retention_days=number("archive_retention_days"),
+            # Blank means off. Retention deletes archived files, so an empty field
+            # must mean "never" rather than "keep whatever was set before".
+            clear_archive_retention=not (form.get("archive_retention_days") or "").strip(),
+            run_history_keep=number("run_history_keep"),
+            log_retention_days=number("log_retention_days"),
+            log_max_total_mb=number("log_max_total_mb"),
+        )
+        preferences_store.save(
+            session, apply_settings_update(preferences_store.load(session), update)
+        )
+    except ValidationError as exc:
+        context = _settings_context(request, session, error=_describe_validation_error(exc))
+        return templates.TemplateResponse(request, "settings.html", context, status_code=400)
+    return RedirectResponse(url="/settings?saved=1", status_code=303)
+
+
+@router.post("/settings/test-notification", response_class=HTMLResponse)
+def test_notification_form(request: Request, session: Session = Depends(get_session)) -> Any:
+    security.require_user(request, session)
+    delivery = notify.send(preferences_store.load(session), notify.sample_payload())
+    context = _settings_context(request, session, test_result=delivery)
+    return templates.TemplateResponse(request, "settings.html", context)
+
+
+@router.post("/settings/run-maintenance", response_class=HTMLResponse)
+def run_maintenance_form(request: Request, session: Session = Depends(get_session)) -> Any:
+    security.require_user(request, session)
+    report = retention.run(session, request.app.state.settings, preferences_store.load(session))
+    context = _settings_context(request, session, maintenance=report)
+    return templates.TemplateResponse(request, "settings.html", context)
+
+
+@router.get("/settings/export")
+def export_configuration_file(request: Request, session: Session = Depends(get_session)) -> Any:
+    """Download the configuration. Contains no credential material of any kind."""
+    security.require_user(request, session)
+    return JSONResponse(
+        content=portable.export(session),
+        headers={"Content-Disposition": 'attachment; filename="hivesync-config.json"'},
+    )
+
+
+@router.post("/settings/import", response_class=HTMLResponse)
+async def import_configuration_form(
+    request: Request, session: Session = Depends(get_session)
+) -> Any:
+    security.require_user(request, session)
+    form = await request.form()
+    upload = form.get("document")
+    if upload is not None and hasattr(upload, "read"):
+        raw = (await upload.read()).decode("utf-8", "replace")
+    else:
+        raw = str(form.get("document_text") or "")
+
+    try:
+        document = json.loads(raw)
+    except ValueError:
+        context = _settings_context(
+            request,
+            session,
+            error="That is not valid JSON. Use a file produced by Export.",
+        )
+        return templates.TemplateResponse(request, "settings.html", context, status_code=400)
+
+    report = portable.import_document(session, document)
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None and scheduler.running:
+        # Imported jobs carry schedules, which only exist once the scheduler is
+        # rebuilt from the Job table.
+        scheduler.reload()
+
+    summary = (
+        f"Imported {report.connections_created} connections and {report.jobs_created} jobs. "
+        f"Skipped {report.connections_skipped} connections and {report.jobs_skipped} jobs "
+        "that already existed."
+    )
+    context = _settings_context(
+        request,
+        session,
+        message=summary if report.ok else None,
+        error=" ".join(report.errors) if not report.ok else None,
+        maintenance=None,
+    )
+    context["import_warnings"] = report.warnings
+    return templates.TemplateResponse(request, "settings.html", context)
+
+
+_PRESET_ERRORS = {
+    "name": "A preset needs a name.",
+    "duplicate": "A preset with that name already exists.",
+    "builtin": (
+        "Built-in presets are refreshed from the application at every startup, so "
+        "an edit here would be undone by the next restart. Copy it into a new "
+        "preset and edit that instead."
+    ),
+    "in-use": (
+        "That preset is used by a job. Remove it from the job first: deleting it "
+        "would change what that job syncs."
+    ),
+}
+
+
+@router.get("/filter-presets", response_class=HTMLResponse)
+def filter_presets_page(
+    request: Request, error: str | None = None, session: Session = Depends(get_session)
+) -> Any:
+    context = _page_context(request, session)
+    usage: dict[int, list[str]] = {}
+    for job in session.scalars(select(Job)):
+        for preset in job.filter_presets:
+            usage.setdefault(preset.id, []).append(job.name)
+    context["presets"] = [
+        {
+            "preset": preset,
+            "used_by": sorted(usage.get(preset.id, [])),
+            "exclude_text": "\n".join((preset.rules or {}).get("exclude", []) or []),
+            "include_text": "\n".join((preset.rules or {}).get("include", []) or []),
+        }
+        for preset in session.scalars(
+            select(FilterPreset).order_by(FilterPreset.builtin.desc(), FilterPreset.name)
+        )
+    ]
+    context["error"] = _PRESET_ERRORS.get(error or "")
+    return templates.TemplateResponse(request, "filter_presets.html", context)
+
+
+def _rule_lines(raw: str) -> list[str]:
+    return [line.strip() for line in (raw or "").splitlines() if line.strip()]
+
+
+@router.post("/filter-presets", response_class=HTMLResponse)
+async def save_filter_preset_form(request: Request, session: Session = Depends(get_session)) -> Any:
+    security.require_user(request, session)
+    form = {key: str(value) for key, value in (await request.form()).items()}
+    name = (form.get("name") or "").strip()
+    rules = {
+        "exclude": _rule_lines(form.get("exclude") or ""),
+        "include": _rule_lines(form.get("include") or ""),
+    }
+    preset_id = (form.get("preset_id") or "").strip()
+
+    if not name:
+        return RedirectResponse(url="/filter-presets?error=name", status_code=303)
+
+    if preset_id:
+        preset = session.get(FilterPreset, int(preset_id))
+        if preset is None:
+            return RedirectResponse(url="/filter-presets", status_code=303)
+        if preset.builtin:
+            return RedirectResponse(url="/filter-presets?error=builtin", status_code=303)
+        clash = session.scalar(
+            select(FilterPreset).where(FilterPreset.name == name, FilterPreset.id != preset.id)
+        )
+        if clash is not None:
+            return RedirectResponse(url="/filter-presets?error=duplicate", status_code=303)
+        preset.name = name
+        preset.rules = rules
+    else:
+        if session.scalar(select(FilterPreset).where(FilterPreset.name == name)):
+            return RedirectResponse(url="/filter-presets?error=duplicate", status_code=303)
+        session.add(FilterPreset(name=name, builtin=False, rules=rules))
+    session.commit()
+    return RedirectResponse(url="/filter-presets", status_code=303)
+
+
+@router.post("/filter-presets/{preset_id}/delete", response_class=HTMLResponse)
+def delete_filter_preset_form(
+    preset_id: int, request: Request, session: Session = Depends(get_session)
+) -> Any:
+    security.require_user(request, session)
+    preset = session.get(FilterPreset, preset_id)
+    if preset is None:
+        return RedirectResponse(url="/filter-presets", status_code=303)
+    if preset.builtin:
+        return RedirectResponse(url="/filter-presets?error=builtin", status_code=303)
+    # The database refuses this too, through RESTRICT on the association table.
+    # Catching it here produces a sentence instead of an integrity error.
+    if any(preset in job.filter_presets for job in session.scalars(select(Job))):
+        return RedirectResponse(url="/filter-presets?error=in-use", status_code=303)
+    session.delete(preset)
+    session.commit()
+    return RedirectResponse(url="/filter-presets", status_code=303)

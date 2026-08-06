@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Filter presets{% endblock %}
+
+{% block content %}
+<h1 class="text-xl font-semibold tracking-tight text-slate-100">Filter presets</h1>
+<p class="mt-2 max-w-2xl text-xs text-slate-500">
+  A preset is a named set of exclude and include patterns that jobs can share.
+  Patterns are rclone filter rules. <span class="font-mono">@eaDir/**</span>
+  matches that directory at any depth, including the top of the synced folder. A
+  leading slash anchors to the top instead. Avoid a leading
+  <span class="font-mono">**/</span>: it requires at least one directory in front
+  of the name, so it misses the one at the top.
+</p>
+
+{% if error %}
+<div class="mt-4 rounded border border-red-800 bg-red-950/40 px-4 py-2 text-sm text-red-200">
+  {{ error }}
+</div>
+{% endif %}
+
+<div class="mt-6 space-y-3">
+  {% for entry in presets %}
+  {% set preset = entry.preset %}
+  <div class="rounded border border-slate-800 bg-slate-900/40 px-4 py-3"
+       x-data="{ open: false }">
+    <div class="flex flex-wrap items-baseline justify-between gap-2">
+      <div class="flex items-baseline gap-2">
+        <span class="text-sm font-medium text-slate-100">{{ preset.name }}</span>
+        {% if preset.builtin %}
+        <span class="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-400">built in</span>
+        {% endif %}
+      </div>
+      <div class="flex items-center gap-3 text-xs">
+        <span class="text-slate-500">
+          {{ (preset.rules.get('exclude', []) or []) | length }} exclude,
+          {{ (preset.rules.get('include', []) or []) | length }} include
+          {%- if entry.used_by %}, used by {{ entry.used_by | join(', ') }}{% endif %}
+        </span>
+        <button type="button" @click="open = !open" class="text-slate-400 hover:text-slate-100"
+                x-text="open ? 'Hide' : '{{ 'View' if preset.builtin else 'Edit' }}'">
+          {{ 'View' if preset.builtin else 'Edit' }}
+        </button>
+      </div>
+    </div>
+
+    <div x-show="open" x-cloak class="mt-3 border-t border-slate-800 pt-3">
+      <form method="post" action="/filter-presets" class="space-y-3">
+        <input type="hidden" name="preset_id" value="{{ preset.id }}">
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div>
+            <label class="block text-xs text-slate-400" for="name-{{ preset.id }}">Name</label>
+            <input id="name-{{ preset.id }}" name="name" value="{{ preset.name }}"
+                   {% if preset.builtin %}disabled{% endif %}
+                   class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 disabled:opacity-60 focus:border-slate-500 focus:outline-none">
+          </div>
+        </div>
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div>
+            <label class="block text-xs text-slate-400" for="exclude-{{ preset.id }}">
+              Exclude, one per line
+            </label>
+            <textarea id="exclude-{{ preset.id }}" name="exclude" rows="6"
+                      {% if preset.builtin %}disabled{% endif %}
+                      class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-100 disabled:opacity-60 focus:border-slate-500 focus:outline-none">{{ entry.exclude_text }}</textarea>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400" for="include-{{ preset.id }}">
+              Include, one per line
+            </label>
+            <textarea id="include-{{ preset.id }}" name="include" rows="6"
+                      {% if preset.builtin %}disabled{% endif %}
+                      class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-100 disabled:opacity-60 focus:border-slate-500 focus:outline-none">{{ entry.include_text }}</textarea>
+          </div>
+        </div>
+        {% if preset.builtin %}
+        {# Re-seeded from the application at every startup, so an edit here would
+           be undone by the next restart and a delete would come back. #}
+        <p class="text-xs text-slate-500">
+          Built-in presets are refreshed from the application at every startup, so
+          they cannot be edited here. Create a new preset to change the patterns.
+        </p>
+        {% else %}
+        <div class="flex items-center gap-3">
+          <button type="submit"
+                  class="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-white">
+            Save
+          </button>
+        </div>
+        {% endif %}
+      </form>
+      {% if not preset.builtin %}
+      <form method="post" action="/filter-presets/{{ preset.id }}/delete" class="mt-2"
+            onsubmit="return confirm('Delete {{ preset.name }}?');">
+        <button type="submit" class="text-xs text-red-400 hover:text-red-300">Delete preset</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<section class="mt-8 border-t border-slate-800 pt-6">
+  <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">New preset</h2>
+  <form method="post" action="/filter-presets" class="mt-3 space-y-3">
+    <div>
+      <label class="block text-xs text-slate-400" for="new-name">Name</label>
+      <input id="new-name" name="name" required
+             class="mt-1 w-full max-w-md rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+    </div>
+    <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <div>
+        <label class="block text-xs text-slate-400" for="new-exclude">Exclude, one per line</label>
+        <textarea id="new-exclude" name="exclude" rows="5" placeholder="@eaDir/**"
+                  class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-100 focus:border-slate-500 focus:outline-none"></textarea>
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400" for="new-include">Include, one per line</label>
+        <textarea id="new-include" name="include" rows="5"
+                  class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-100 focus:border-slate-500 focus:outline-none"></textarea>
+      </div>
+    </div>
+    <button type="submit"
+            class="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-white">
+      Create preset
+    </button>
+  </form>
+</section>
+{% endblock %}

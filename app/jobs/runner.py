@@ -32,6 +32,8 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from app import notify
+from app import preferences as preferences_store
 from app.config import Settings
 from app.crypto import SecretBox
 from app.engines import bisync, parsers, process, rcloneconf
@@ -138,6 +140,11 @@ class LiveRunner:
             except (EngineError, RemoteConfigError, archive.ArchiveError) as exc:
                 _fail(session, run, str(exc))
                 _emit(run_id, "status", f"Failed: {exc}")
+
+            # After the outcome is committed, never inside it: a slow endpoint
+            # must not hold a write lock, and a failed notification must not
+            # change what the run recorded. SPEC section 16.
+            _notify(session, run, job)
         finally:
             with self._lock:
                 self._active.pop(run_id, None)
@@ -592,6 +599,20 @@ def _record_bisync(
             "resync": run.is_resync,
         },
     )
+
+
+def _notify(session: Session, run: JobRun, job: Job) -> None:
+    """Tell whoever asked to be told. Never lets a failure here reach the run."""
+    try:
+        if not notify.should_notify(job, run.status):
+            return
+        preferences = preferences_store.load(session)
+        if preferences.notify_target == "none":
+            return
+        payload = notify.build_payload(job, run, base_url=preferences.base_url)
+        notify.send(preferences, payload)
+    except Exception:
+        logger.exception("Could not dispatch notification", extra={"run_id": run.id})
 
 
 def _fail(

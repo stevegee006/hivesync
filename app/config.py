@@ -41,6 +41,16 @@ class Settings(BaseSettings):
 
     log_level: str = "info"
 
+    # Worker pool size for live runs and for plans. Set at startup rather than
+    # from the Settings screen: resizing a thread pool under running syncs is a
+    # way to lose one, and this is a number people set once.
+    max_concurrent_runs: int = 3
+
+    # Optional bearer token for /metrics, so Prometheus can scrape without a
+    # session. Unset means the endpoint needs a logged-in user. Job names, and
+    # therefore share names, appear in the labels, so it is never open.
+    metrics_token: str | None = None
+
     # Volume layout. Overridable so the app can run outside a container.
     config_dir: Path = Path("/config")
 
