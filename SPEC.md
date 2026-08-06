@@ -61,7 +61,7 @@ LFTP is not a protocol, it is a client. Label it accurately in the UI so nobody 
 
 - **Backend:** Python 3.12, FastAPI, Uvicorn
 - **DB:** SQLite via SQLAlchemy 2.x with Alembic migrations, at `/config/hivesync.db`
-- **Scheduler:** APScheduler 3.x with `SQLAlchemyJobStore` so schedules survive restarts, cron triggers, timezone aware
+- **Scheduler:** APScheduler 3.x, cron triggers, timezone aware. **Amended:** no `SQLAlchemyJobStore`. The store creates an `apscheduler_jobs` table that is not in `Base.metadata`, so Alembic autogenerate proposes dropping it and the next migration would delete the schedule store on upgrade. The schedule already lives in `Job.schedule_cron`, so it is rebuilt from there at startup, which gives the same restart survival with one source of truth. Continuous jobs are driven by a separate watcher, because their timing is a backoff rather than a cron expression
 - **Frontend:** Jinja2 templates, HTMX, Alpine.js, Tailwind. Server rendered, no Node build step. Live run output over Server-Sent Events.
 - **Crypto:** `cryptography` Fernet, key from `HIVESYNC_SECRET_KEY`
 - **Password hashing:** argon2id via `argon2-cffi`
@@ -109,6 +109,9 @@ Job
   max_delete_pct (safety brake, default 20),
   conflict_resolve (newer|older|larger|smaller|path1|path2|none),
   schedule_cron (nullable), timezone, timeout_seconds,
+  # continuous mode, section 9.1. Mutually exclusive with schedule_cron.
+  continuous (bool), continuous_interval_seconds, continuous_idle_interval_seconds,
+  quiet_period_seconds, last_checked_at (nullable),
   notify_on (never|failure|always),
   bisync_initialized (bool),
   created_at, updated_at
@@ -176,14 +179,16 @@ The job editor derives its constraints from the intersection of the two endpoint
 | Job option | Enabled when |
 |---|---|
 | `compare_mode = checksum` | both endpoints share at least one hash type |
-| `direction = bidirectional` | both endpoints can write modification times |
+| `direction = bidirectional` | both endpoints can write modification times, read from `Precision` and not from a Features flag, see below |
 | `delete_mode = archive` | the archiving side supports Move, and the archive path is on the same remote and same share or bucket |
 | `--create-empty-src-dirs` | both endpoints support empty directories |
 | server-side archive rename | archiving side reports Move, otherwise warn that archiving costs a full round trip |
 
 Every disabled option shows its reason inline, for example: "Checksum comparison unavailable: SMB exposes no hash types." Re-probe on edit. Treat a probe older than 30 days as stale on the job edit screen.
 
-If `rclone backend features` is absent or shaped differently in the pinned version, fall back to `rclone about` plus targeted probe operations, and record the actual approach in `CLAUDE.md`. Verify in the container. Do not assume.
+**Verified in the pinned version:** `rclone backend features` is present and returns `Name`, `Root`, `String`, `Precision`, `Hashes`, `Features` (52 booleans) and `MetadataInfo`. No fallback is needed and none is implemented.
+
+**There is no file level `CanSetModTime` flag.** The only modtime entries in `Features` concern directories. Per rclone's own convention a backend that cannot set file modification times reports `Precision` as `math.MaxInt64`, and that is the signal the bidirectional gate uses.
 
 ### 5.5 Connection test and browse
 
@@ -204,7 +209,9 @@ One running `JobRun` per Job, enforced at the DB level. A scheduled trigger firi
 Store the subprocess PID. Cancel sends SIGTERM, waits 10 seconds, then SIGKILL. Mark the run `cancelled`.
 
 ### 6.4 Safety brakes
-- Always pass `--max-delete` derived from `max_delete_pct`, so a source that mounts empty or fails to list cannot wipe the destination. This is the single most valuable safety feature in the tool. Do not make it optional.
+- Always pass `--max-delete`, so a source that mounts empty or fails to list cannot wipe the destination. This is the single most valuable safety feature in the tool. Do not make it optional.
+- **Amended, verified against rclone 1.74.4:** `--max-delete` takes a **count** for `sync` and a **percentage** for `bisync`. Same flag, different units. For a one way job the percentage is resolved against the destination's real file count from the planning pass; for a bidirectional job `max_delete_pct` is passed straight through. Converting for bisync would read 20% as 200%, removing the brake on the one direction that can damage both copies.
+- **The flag alone is not a refusal.** It aborts in flight, after deleting up to the threshold. A live run therefore plans immediately beforehand and refuses before rclone is invoked if the plan exceeds the brake. Both mechanisms are required: the veto makes "a job whose source is emptied is refused" true, and the flag catches a tree that changed between planning and running.
 - For `local` connections that are network mounts, support an optional **sentinel file** check: a known filename that must exist before the run proceeds. A stale cifs or NFS mount presents as an empty directory, which is exactly this failure mode.
 - Refuse to save a job whose source and destination overlap on the same remote.
 - Every destructive UI control is confirmation gated and names the affected job.
@@ -218,7 +225,11 @@ The archive base defaults to a **sibling** of the sync root, not a child:
 
 - Root `remote:Share/media` gives archive base `remote:Share/media.hivesync-archive`
 
-If a child path is genuinely required, the implementation **must** inject a matching exclude filter so the archive tree is never itself synced or recursively archived. This is a real failure mode: a `--backup-dir` inside the sync destination makes rclone see the archive as extra files on the destination and delete or re-archive them on the next run. Do not allow that configuration to save without the auto-exclude.
+If a child path is genuinely required, the implementation **must** inject a matching exclude filter so the archive tree is never itself synced or recursively archived.
+
+**Amended, verified against rclone 1.74.4.** The stated failure mode does not happen: rclone refuses the run outright with `destination and parameter to --backup-dir mustn't overlap`. The instruction stands for a different reason, which is that without the exclude the job will not run at all.
+
+**A share or bucket root has no usable sibling.** For `remote:Share` the sibling is `remote:Share.hivesync-archive`, a different share that does not exist and cannot be created. Verified against a real SMB server, where rclone hangs retrying rather than failing. A destination with no parent therefore archives into a child, with the exclude injected. An absolute path such as `/data` is exempt, since it does have a creatable sibling.
 
 Validate at save time:
 - Archive base is on the same remote **and the same share or bucket** as the side being modified. A cross-share move is not server-side and may fail or silently fall back to copy plus delete.
@@ -242,22 +253,40 @@ Where the archiving side supports server-side Move, archiving is a rename and no
 
 Dry run must produce a reviewable, filterable, sortable table, not a wall of log text. Two phases:
 
-**Phase 1, classification:**
+**Phase 1, presence:**
 ```
-rclone check SRC DST --combined - --checkers 16 [filters] --config <tmp>
+rclone check SRC DST --size-only --missing-on-dst F --missing-on-src F --differ F --match F --error F
 ```
-`--combined` emits one line per path with a leading symbol: `=` identical, `-` only on path1, `+` only on path2, `*` differing, `!` error. Parse into `JobRunChange` rows.
+**Amended.** The `--combined` legend above is inverted: verified against rclone
+1.74.4, `+` is path1-only and `-` is path2-only, so following it would label every
+file about to be created as "deleted" in the one screen whose purpose is
+preventing accidental deletion. `--combined` is therefore not parsed at all. The
+named per-category outputs say what they mean and cannot be inverted by a reader
+or by a later edit.
+
+`--size-only` because this phase establishes **presence only**, which no
+comparison mode affects, and because hashing a NAS tree is the difference between
+a usable dry run and one nobody waits for. SMB and FTP expose no hash types at
+all, so a hash-based check was never available for most jobs.
 
 **Phase 2, exact plan:**
 ```
 rclone sync SRC DST --dry-run --use-json-log -v [all real run flags] --config <tmp>
 ```
-Parse the JSON lines and reconcile against phase 1. This confirms what the real flag set would do, including archive destinations and filter effects.
+Parse the JSON lines and reconcile against phase 1. This is the **authority** on
+what would change, because it is the same code path a live run takes.
+
+**Amended:** the spec had phase 1 classifying and phase 2 confirming. That is
+backwards. `check` compares hash and size and never modification times, so for the
+default mtime comparison it cannot reproduce what `sync` would do. Presence from
+phase 1 plus intent from phase 2 is the combination that is actually sound.
+Planning never passes `--backup-dir`, since where a file goes does not change
+whether it goes.
 
 For bidirectional, `rclone bisync PATH1 PATH2 --dry-run`, which requires the job to be initialized first. If it is not, the UI says so and offers First Sync instead of failing.
 
 **Presentation:**
-- Summary cards: new, updated, deleted, archived, unchanged, errors, total bytes, estimated duration
+- Summary cards: new, updated, deleted, archived, unchanged, errors, total bytes. Estimated duration is **dropped**: nothing in the plan supports an honest estimate, and a wrong one on the screen that gates a destructive run is worse than none
 - Table grouped by action with a path filter box
 - A prominent warning banner whenever deletions exceed `max_delete_pct`, shown before any live run is permitted
 - A "Run live with these settings" button on the dry run result page
@@ -268,11 +297,49 @@ Persist dry runs like any other run, so two can be compared later.
 
 ## 9. Scheduling
 
-- Cron expression per job, with a human readable preview ("Every day at 2:30 AM America/Denver") and the next five fire times
+- Cron expression per job, with the next five fire times as a preview. **Amended:**
+  the preview is concrete fire times rather than prose, because they are unambiguous
+  for any expression and they come from the same trigger object the scheduler uses, so
+  the preview cannot disagree with what happens
+- A **schedule builder** over the cron field: frequency, day of week, hour and minute.
+  It writes the expression rather than replacing it, because cron expresses things a
+  set of dropdowns cannot. Opening a job parses the expression back into the controls
+  only for shapes they can represent; anything else reads "custom" and is left exactly
+  as written
 - Timezone per job, defaulting from `TZ`
 - `coalesce=True` and a configurable `misfire_grace_time`, so a container restart does not fire a backlog
 - "Run now" and "Dry run now" always available
 - Optional global maintenance window during which scheduled runs are suppressed
+
+### 9.1 Continuous mode
+
+Added after M8, and it reverses part of section 19's non-goal. A job may watch
+instead of waiting for a schedule. The two are mutually exclusive per job.
+
+**This is polling, and the UI says so.** Verified against rclone 1.74.4,
+`ChangeNotify` is false for `local`, `sftp`, `ftp` and `smb` alike, so no endpoint
+this application supports can announce that a file changed, and `--poll-interval`
+does nothing for any of them. A cycle therefore re-lists both endpoints in full,
+which is the cost that decides what interval is sensible on a large tree.
+
+- The interval **backs off**: it returns to `continuous_interval_seconds` after a
+  cycle that moved something, and doubles towards `continuous_idle_interval_seconds`
+  while nothing does.
+- `quiet_period_seconds` is passed as `--min-age`, so a file still being written is
+  left until it settles rather than copied half finished and copied again.
+- **One way only.** bisync compares both sides in full and carries workdir state, so
+  it is both the most expensive thing to loop and the hardest to recover from.
+  Continuous plus bidirectional is refused at save time.
+- **A successful cycle that changed nothing records no run.** A sixty second loop is
+  1,440 rows a day, which buries the runs that matter. `Job.last_checked_at` carries
+  the proof of life instead. Any failure is always kept, including a refusal by the
+  delete brake.
+- A run left in `queued` or `running` by a restart is failed at startup with an
+  explanation. Without that the partial unique index refuses every later run, and a
+  continuous job stops looking with nothing in the log to say why.
+
+Continuous mode makes the delete brake and the archive load bearing rather than
+precautionary: a deletion propagates on the next cycle rather than overnight.
 
 ---
 
@@ -299,7 +366,7 @@ Per the rclone backend overview, docs last updated 2026-04-21. Treat this as ori
 | Capability | SMB | SFTP | FTP | Local |
 |---|---|---|---|---|
 | Support tier | 2 (stable, minor gaps) | 1 (core) | 1 (core) | 1 (core) |
-| Hashes | **none** | md5, sha1 | **none** | all |
+| Hashes | **none** | md5, sha1 *if the server provides them, see below* | **none** | all |
 | ModTime read/write | yes (files) | yes (files and dirs) | yes | yes |
 | Case insensitive | yes | depends on OS | no | depends on FS |
 | Server-side Move / DirMove | yes / yes | yes / yes | yes / yes | yes / yes |
@@ -308,6 +375,13 @@ Per the rclone backend overview, docs last updated 2026-04-21. Treat this as ori
 | Free space (`about`) | yes | yes | no | yes |
 
 Older forum posts claim the SMB backend lacks modtime support. That is out of date.
+
+**Amended, verified against the fixtures.** SFTP hash support is a property of the
+**server**, not of the protocol: rclone detects md5 and sha1 by running `md5sum`
+and `sha1sum` over a shell, so a chroot SFTP-only server with no shell reports no
+hashes at all. Do not read the table above as a promise. It is precisely why the
+runtime probe in section 5.4 exists, and why the job editor derives its
+constraints from what the endpoint actually answered.
 
 Consequences:
 - SMB and FTP expose no hashes, so `compare_mode = checksum` must be disabled when either side is one of them. Default to mtime and size.
@@ -412,15 +486,33 @@ POST   /api/runs/{id}/cancel
 GET    /api/settings
 PATCH  /api/settings
 POST   /api/settings/test-notification
-GET    /api/health                  liveness, binary versions, db ok
-GET    /metrics                     Prometheus text format
+GET    /api/settings/retention-preview   what the next prune would remove
+POST   /api/settings/run-maintenance     prune now rather than at 03:17
+GET    /api/settings/export         configuration, never any credential material
+POST   /api/settings/import
+GET    /api/activity                live speed and progress for the dashboard
+GET    /api/health                  liveness and db ok. No versions, see below
+GET    /api/health/detail           binary versions. Authenticated
+GET    /metrics                     Prometheus text format. Authenticated
 ```
+
+**Amended.** `/api/health` no longer reports binary versions: an unauthenticated
+inventory of the binaries on a box is a free list of things to attack. Liveness
+stays open because the container HEALTHCHECK calls it and has no session; the
+version detail moved behind authentication. `/metrics` is authenticated for the
+same reason, since its labels carry job names, which are share names.
+
+`/api/activity` is polled by the dashboard every two seconds while anything runs
+and every fifteen when idle. Deliberately one endpoint rather than an SSE stream
+per running job: browsers allow about six connections per host, and a stream per
+card exhausts them.
 
 ---
 
 ## 13. UI screens
 
-1. **Dashboard.** Job cards with last status, last run time, next run time, quick Dry Run and Run buttons, and a live-runs strip.
+1. **Dashboard.** Job cards with last status, last run time, next run time, the schedule or watch interval, quick Dry Run and Run buttons, and a live-runs strip. Plus a persistent **activity strip** on every page: current speed with the file in flight, a chart over the last minute, ten minutes or hour, and session and lifetime totals.
+   Speed comes from rclone's own stats events. **rclone reports no up/down split**, so the direction shown is derived from the job, writing to a remote being outbound and pulling from one inbound, and local to local is shown as neither rather than assigned a direction it does not have.
 2. **Connections.** List with green/red test status. Editor as described in section 5. Test button and directory browser.
 3. **Credentials.** Names and kinds. Add and replace only, never reveal.
 4. **Jobs.** List plus a create/edit wizard: Endpoints, Direction, Deletion handling, Filters, Performance, Schedule, Review.
@@ -488,9 +580,11 @@ services:
 - Redact secrets from every log line, exception traceback, and stored command.
 - SFTP host key verification on by default, with an explicit per-connection trust-on-first-use that pins the fingerprint. Show the fingerprint and fail the run if it changes.
 - Argon2id password hashing. HttpOnly, SameSite=Lax session cookies. CSRF token on state-changing form posts.
-- Rate limit login attempts.
-- `trusted_header` auth mode for running behind authentik or similar. Honor the header only when the request source is inside `HIVESYNC_TRUSTED_PROXIES`.
+- Rate limit login attempts, per username **and** per source address, stored in the database so a restart does not clear a lockout. A wrong password, an unknown username and a locked account must be indistinguishable to the caller: a limiter that announces the lockout is a username oracle.
+- `trusted_header` auth mode for running behind authentik or similar. Honor the header only when the **socket peer** is inside `HIVESYNC_TRUSTED_PROXIES`, never on the strength of an `X-Forwarded-For` the client could have written itself. The asserted username maps to an existing account and never creates one: a header that provisions an admin is a registration form with no password on it.
 - No outbound telemetry.
+- **Added:** an optional `HIVESYNC_API_TOKEN` for scripted access. Bearer authenticated requests skip the CSRF check, because a browser never attaches a bearer token on its own and there is nothing for a cross-site page to forge.
+- **Added:** response headers refusing framing, sniffing and referrer leakage. A framed page clicked through is a genuine click, so no CSRF token protects against it, and this UI has a Run button that deletes files. The policy must permit `unsafe-eval` while the templates use Alpine's standard build, which compiles every expression with `new Function`; without it every conditional field silently renders nothing.
 
 ---
 
@@ -556,12 +650,33 @@ Notifications, `/metrics`, retention, filter presets, config export and import w
 
 **M8: Hardening**
 Host key pinning, login rate limiting, CSRF, the redaction test, full integration suite in compose.
+*Note:* host key pinning actually landed in M1, with trust on first use and a run
+that fails when a key changes. M8 verified it rather than building it.
+
+**M9: Live activity, continuous mode, and a schedule builder**
+Added after M8 at the operator's request, beyond the original plan. Live transfer
+speed on the dashboard from rclone's stats events, continuous mode per section
+9.1, and a schedule builder over the cron field per section 9.
+*Accepts when:* a running job shows speed, ETA and the current file and clears
+when it ends; a continuous job re-runs at its floor after a change and backs off
+when idle; an idle day of watching adds no run rows while a cycle that transfers
+something does; continuous plus bidirectional and continuous plus a schedule are
+both refused; and the builder round-trips a weekly schedule while leaving a hand
+written expression untouched.
 
 ---
 
 ## 19. Non-goals for v1
 
-- Real-time filesystem-watch sync. This is scheduled sync. Resilio's continuous behavior is not reproduced. Say so in the README so expectations are set.
+- ~~Real-time filesystem-watch sync.~~ **Amended at M9, partially.** Continuous
+  mode (section 9.1) re-checks a pair of endpoints on a backing-off loop, so a
+  change is picked up within seconds to minutes rather than at the next scheduled
+  run. What remains true, and is still said plainly in the README, is that this is
+  **polling rather than watching**: no endpoint here can announce a change, so
+  Resilio's instant propagation between agents is not reproduced and cannot be
+  without an agent on both machines. Filesystem watching proper, via inotify, is
+  still not implemented; it would only ever cover the local side, since inotify
+  cannot see writes another host makes to a network mount.
 - Peer to peer or NAT traversal.
 - Multi-user RBAC beyond a single admin role.
 - Mobile app.
@@ -570,9 +685,9 @@ Host key pinning, login rate limiting, CSRF, the redaction test, full integratio
 
 ## 20. Open questions
 
-1. Are the volumes large enough that lftp's segmented transfers actually matter, or can the lftp engine be dropped entirely? If dropped, remove it from the image and simplify section 2.
+1. **Still open.** Are the volumes large enough that lftp's segmented transfers actually matter, or can the lftp engine be dropped entirely? The engine is not built: jobs selecting it are refused with a message, and the binary stays in the image pending this answer. Building a second deletion path nobody has established a need for is not free.
 2. Is the cloud server reachable inbound from the local server, or must the container live on the cloud side and push?
-3. Should archived deletions be tracked in the DB as restorable entries with one-click restore, or is the archive folder on disk sufficient?
+3. **Still open.** Should archived deletions be tracked in the DB as restorable entries with one-click restore, or is the archive folder on disk sufficient? Retention pruning exists and is off by default, so nothing is lost while this is undecided.
 4. Single admin behind authentik, or real multi-user?
 
 Do not block M0 or M1 on these. Question 1 gates M7. Question 3 would extend M6.
