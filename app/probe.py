@@ -249,9 +249,21 @@ def _interpret_failure(connection: Connection, summary: str) -> str:
             f"running. Original error: {summary}"
         )
     if "directory not found" in lowered or "not found" in lowered:
+        # The relative-path case is worth calling out by name. The path on screen
+        # looks right, the server has it, and the listing still fails, because
+        # rclone resolved it against the login user's home directory.
+        hint = ""
+        if connection.type in (ConnectionType.sftp, ConnectionType.ftp, ConnectionType.ftps):
+            typed = connection.base_path or ""
+            if typed and not typed.startswith("/"):
+                hint = (
+                    f" '{typed}' has no leading slash, so it is read as relative to "
+                    f"the home directory of '{connection.username or 'the login user'}'. "
+                    f"For a path anywhere else on the server, write it as '/{typed.strip('/')}'."
+                )
         return (
             "Connected, but the base path does not exist. Check the path, and for "
-            f"SMB check the share name. Original error: {summary}"
+            f"SMB check the share name.{hint} Original error: {summary}"
         )
     return summary
 

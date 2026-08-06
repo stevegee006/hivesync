@@ -24,7 +24,18 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 CONTENT_SECURITY_POLICY = "; ".join(
     (
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline'",
+        # 'unsafe-eval' is required, not decorative. Alpine's standard build
+        # compiles every x-if and x-show expression with `new Function`, so a
+        # policy without it silently kills Alpine: the browser renders nothing
+        # inside a <template x-if>, and the connection form loses its Host,
+        # Port, Username and Share fields entirely. That shipped in M8 and was
+        # caught by hand, which is why test_security_headers.py now asserts the
+        # relationship instead of the string.
+        #
+        # Removing it means moving to Alpine's CSP build, whose expressions are
+        # limited to plain property access, and rewriting every conditional in
+        # the templates. Worth doing; not worth pretending is done.
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data:",
         "connect-src 'self'",

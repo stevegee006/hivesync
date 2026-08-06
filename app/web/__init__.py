@@ -16,6 +16,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -26,6 +27,7 @@ from jinja2.runtime import Context
 from markupsafe import Markup
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import __version__, capabilities, csrf, notify, portable, probe, security
@@ -298,10 +300,17 @@ def _form_context(
 
 
 @router.get("/connections", response_class=HTMLResponse)
-def connections_page(request: Request, session: Session = Depends(get_session)) -> Any:
+def connections_page(
+    request: Request,
+    error: str | None = None,
+    names: str | None = None,
+    session: Session = Depends(get_session),
+) -> Any:
     context = _page_context(request, session)
     connections = session.scalars(select(Connection).order_by(Connection.name)).all()
     context["connections"] = [to_read(connection, request) for connection in connections]
+    context["error"] = error
+    context["names"] = names
     return templates.TemplateResponse(request, "connections/list.html", context)
 
 
@@ -803,12 +812,23 @@ def new_job_page(request: Request, session: Session = Depends(get_session)) -> A
 
 
 @router.get("/jobs/{job_id}", response_class=HTMLResponse)
-def edit_job_page(job_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
+def edit_job_page(
+    job_id: int,
+    request: Request,
+    error: str | None = None,
+    session: Session = Depends(get_session),
+) -> Any:
     job = session.get(Job, job_id)
     if job is None:
         return RedirectResponse(url="/jobs", status_code=303)
+    message = (
+        "This job has a run in progress. Cancel it, or wait for it to finish, "
+        "before deleting the job."
+        if error == "running"
+        else None
+    )
     return templates.TemplateResponse(
-        request, "jobs/form.html", _job_form_context(request, session, job)
+        request, "jobs/form.html", _job_form_context(request, session, job, error=message)
     )
 
 
@@ -1214,3 +1234,72 @@ def delete_filter_preset_form(
     session.delete(preset)
     session.commit()
     return RedirectResponse(url="/filter-presets", status_code=303)
+
+
+@router.post("/connections/{connection_id}/delete", response_class=HTMLResponse)
+def delete_connection_form(
+    connection_id: int, request: Request, session: Session = Depends(get_session)
+) -> Any:
+    """Remove a connection, refusing while a job still points at it.
+
+    The database enforces this too, through RESTRICT on the foreign key. Naming
+    the jobs here turns an integrity error into a sentence that says what to do.
+    """
+    security.require_user(request, session)
+    connection = session.get(Connection, connection_id)
+    if connection is None:
+        return RedirectResponse(url="/connections", status_code=303)
+
+    users = sorted(
+        job.name
+        for job in session.scalars(
+            select(Job).where(
+                (Job.source_connection_id == connection_id)
+                | (Job.dest_connection_id == connection_id)
+            )
+        )
+    )
+    if users:
+        return RedirectResponse(
+            url=f"/connections?error=in-use&names={quote(', '.join(users))}",
+            status_code=303,
+        )
+
+    session.delete(connection)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        return RedirectResponse(url="/connections?error=in-use", status_code=303)
+    return RedirectResponse(url="/connections", status_code=303)
+
+
+@router.post("/jobs/{job_id}/delete", response_class=HTMLResponse)
+def delete_job_form(job_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
+    """Remove a job, and its run history with it.
+
+    Refused while a run is in flight: deleting the row underneath a running
+    rclone loses the record of work that is actually happening on disk.
+    """
+    security.require_user(request, session)
+    job = session.get(Job, job_id)
+    if job is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+
+    active = session.scalar(
+        select(JobRun).where(
+            JobRun.job_id == job_id,
+            JobRun.status.in_([RunStatus.queued, RunStatus.running]),
+        )
+    )
+    if active is not None:
+        return RedirectResponse(url=f"/jobs/{job_id}?error=running", status_code=303)
+
+    session.delete(job)
+    session.commit()
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None and scheduler.running:
+        # The schedule is rebuilt from the Job table, so a deleted job has to be
+        # unscheduled explicitly or it keeps firing until the next restart.
+        scheduler.reload()
+    return RedirectResponse(url="/jobs", status_code=303)

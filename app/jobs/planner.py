@@ -29,6 +29,7 @@ from app.config import Settings
 from app.crypto import SecretBox
 from app.engines.base import EngineError, Plan
 from app.engines.rclone import RcloneEngine, side_for
+from app.jobs.events import RunEvent, broker
 from app.models import (
     Engine,
     Job,
@@ -118,7 +119,14 @@ class PlanRunner:
             logger.exception("Planning run failed unexpectedly", extra={"run_id": run_id})
 
     def run_now(self, run_id: int) -> None:
-        """Execute one planning run to completion. Its own session, own commit."""
+        """Execute one planning run to completion. Its own session, own commit.
+
+        Publishes to the same broker a live run uses. It has less to say, since
+        planning produces one result rather than a stream of lines, but the
+        watcher needs the end of it: without a `done` the run detail page shows
+        a live pane that never updates and never reloads, which is what a dry
+        run looked like until this was added.
+        """
         session = self._session_factory()
         try:
             run = session.get(JobRun, run_id)
@@ -133,6 +141,7 @@ class PlanRunner:
             run.status = RunStatus.running
             run.started_at = utcnow()
             session.commit()
+            _emit(run_id, "status", "Comparing both endpoints. Nothing is being changed.")
 
             try:
                 plan = engine_for(job).plan(job, box=self._box, settings=self._settings)
@@ -141,8 +150,22 @@ class PlanRunner:
                 return
 
             _persist_plan(session, run, job, plan)
+            _emit(
+                run_id,
+                "done",
+                f"{plan.new_count} new, {plan.updated_count} updated, "
+                f"{plan.deleted_count} to remove.",
+            )
         finally:
+            # Always, on every path out. A watcher that is never told the run
+            # ended holds its connection open, and a browser only allows about
+            # six per host before it stops talking to the application at all.
+            broker.finish(run_id)
             session.close()
+
+
+def _emit(run_id: int, kind: str, text: str) -> None:
+    broker.publish(run_id, RunEvent(kind=kind, text=text))
 
 
 def _finish_failed(session: Session, run: JobRun, message: str) -> None:
@@ -151,6 +174,7 @@ def _finish_failed(session: Session, run: JobRun, message: str) -> None:
     run.errors_count = 1
     run.summary = {"error": message}
     session.commit()
+    _emit(run.id, "done", f"Failed: {message}")
     logger.warning("Run failed", extra={"run_id": run.id, "reason": message})
 
 

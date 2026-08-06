@@ -12,6 +12,15 @@
 
 {% include "partials/_flash.html" %}
 
+{% if error == 'in-use' %}
+<div class="mt-4 rounded border border-red-800 bg-red-950/40 px-4 py-2 text-sm text-red-200">
+  That connection is still used by
+  {% if names %}<span class="font-mono">{{ names }}</span>{% else %}a job{% endif %}.
+  Delete or repoint those jobs first: a job with a missing endpoint cannot run and
+  cannot be fixed from this screen.
+</div>
+{% endif %}
+
 {% if not connections %}
 <div class="mt-6 rounded border border-slate-800 bg-slate-900/50 px-6 py-10 text-center">
   <p class="text-sm text-slate-400">No connections yet.</p>
@@ -71,8 +80,15 @@
           {% endif %}
         </td>
         <td class="px-4 py-2 text-right whitespace-nowrap">
-          <a href="/connections/{{ connection.id }}"
-             class="text-xs text-slate-400 hover:text-slate-100">Edit</a>
+          <div class="flex items-center justify-end gap-3">
+            <a href="/connections/{{ connection.id }}"
+               class="text-xs text-slate-400 hover:text-slate-100">Edit</a>
+            <form method="post" action="/connections/{{ connection.id }}/delete"
+                  onsubmit="return confirm('Delete the connection {{ connection.name }}? This removes the endpoint definition only. Nothing is deleted on the server it points at.');">
+              {{ csrf_input() }}
+              <button type="submit" class="text-xs text-red-400 hover:text-red-300">Delete</button>
+            </form>
+          </div>
         </td>
       </tr>
       {% endfor %}

@@ -7,9 +7,11 @@ no CSRF token protects against it.
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.headers import CONTENT_SECURITY_POLICY
+from app.web import TEMPLATE_DIR
 
 
 def test_every_response_refuses_framing(client: TestClient) -> None:
@@ -36,6 +38,43 @@ def test_the_policy_allows_only_this_origin(client: TestClient) -> None:
     assert "https://" not in policy
     assert "object-src 'none'" in policy
     assert "form-action 'self'" in policy
+
+
+def test_the_policy_permits_what_the_vendored_scripts_actually_need() -> None:
+    """The regression this exists for.
+
+    M8 shipped a policy without 'unsafe-eval'. Alpine's standard build compiles
+    every expression with `new Function`, so Alpine died in any compliant
+    browser, every `<template x-if>` rendered nothing, and the connection form
+    lost its Host, Port, Username and Share fields. Nothing failed: the server
+    still returned 200 with a form that could not be filled in.
+
+    Asserting the relationship rather than the string is the point. Swap Alpine
+    for its CSP build, which needs no eval, and this stops requiring the
+    exemption.
+
+    Checked against the templates rather than the vendored script, because the
+    script is built into the image and absent from a checkout, so a test that
+    read it would skip in exactly the situation it exists to catch.
+    """
+    using_alpine = sorted(
+        path.relative_to(TEMPLATE_DIR).as_posix()
+        for path in TEMPLATE_DIR.rglob("*.html")
+        if any(
+            directive in path.read_text(encoding="utf-8")
+            for directive in ('x-if="', 'x-show="', 'x-data="', 'x-text="')
+        )
+    )
+    if not using_alpine:
+        pytest.skip("no template evaluates an Alpine expression any more")
+
+    assert "'unsafe-eval'" in CONTENT_SECURITY_POLICY, (
+        "These templates hide fields behind Alpine expressions, and Alpine's "
+        "standard build compiles them with `new Function`. Without "
+        "'unsafe-eval' the browser renders nothing inside a <template x-if>, "
+        "so fields such as the connection form's Host and Username disappear "
+        "with no error anywhere: " + ", ".join(using_alpine[:5])
+    )
 
 
 def test_headers_are_present_on_api_responses_too(authed_client: TestClient) -> None:

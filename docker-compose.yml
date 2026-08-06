@@ -22,6 +22,18 @@ services:
       HIVESYNC_ADMIN_USER: ${HIVESYNC_ADMIN_USER:-admin}
       HIVESYNC_ADMIN_PASSWORD: ${HIVESYNC_ADMIN_PASSWORD:-}
       HIVESYNC_AUTH_MODE: ${HIVESYNC_AUTH_MODE:-local}
+      # Required when auth mode is trusted_header. The header is honoured only
+      # when the socket peer is inside the allowlist. See app/security.py.
+      HIVESYNC_TRUSTED_HEADER: ${HIVESYNC_TRUSTED_HEADER:-}
+      HIVESYNC_TRUSTED_PROXIES: ${HIVESYNC_TRUSTED_PROXIES:-}
+      # Bearer tokens for scripted access. Compose passes only what is listed
+      # here, so a variable in .env that is missing from this block is silently
+      # ignored: that is how the M8 tokens appeared to do nothing.
+      HIVESYNC_API_TOKEN: ${HIVESYNC_API_TOKEN:-}
+      HIVESYNC_METRICS_TOKEN: ${HIVESYNC_METRICS_TOKEN:-}
+      HIVESYNC_MAX_CONCURRENT_RUNS: ${HIVESYNC_MAX_CONCURRENT_RUNS:-3}
+      HIVESYNC_LOGIN_MAX_ATTEMPTS: ${HIVESYNC_LOGIN_MAX_ATTEMPTS:-5}
+      HIVESYNC_LOGIN_LOCKOUT_SECONDS: ${HIVESYNC_LOGIN_LOCKOUT_SECONDS:-900}
       HIVESYNC_LOG_LEVEL: ${HIVESYNC_LOG_LEVEL:-info}
       TZ: ${TZ:-America/Denver}
       PUID: ${PUID:-1000}

@@ -28,3 +28,7 @@ app/web/static/vendor/*.js
 # Resolved version digests, written by `make pin-versions` for inspection.
 versions.observed
 files.zip
+
+# Local sandbox for hand testing, not part of the project.
+data/
+docker-compose.override.yml

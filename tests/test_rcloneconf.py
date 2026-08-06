@@ -423,3 +423,82 @@ def test_parse_stanza_without_type_is_refused() -> None:
 def test_parse_stanza_without_a_section_is_refused() -> None:
     with pytest.raises(RemoteConfigError, match="square brackets"):
         rcloneconf.parse_stanza("type = smb\nhost = 10.0.0.5\n")
+
+
+# --------------------------------------------------------------------------
+# Absolute versus home-relative paths
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "connection_type",
+    [ConnectionType.sftp, ConnectionType.ftp, ConnectionType.ftps],
+)
+def test_an_absolute_path_stays_absolute(connection_type: ConnectionType) -> None:
+    """rclone reads a path with no leading slash as relative to the login user's
+    home directory. Stripping the slash off /home/gee/docker turned it into
+    /root/home/gee/docker for a root login: the endpoint connected, the listing
+    failed, and the path on screen looked correct the whole time.
+    """
+    connection = Connection(
+        name="vm",
+        type=connection_type,
+        host="10.1.1.26",
+        username="root",
+        base_path="/home/gee/docker/",
+    )
+    assert rcloneconf.display_path(connection) == "/home/gee/docker"
+
+
+@pytest.mark.parametrize(
+    "connection_type",
+    [ConnectionType.sftp, ConnectionType.ftp, ConnectionType.ftps],
+)
+def test_a_relative_path_stays_relative(connection_type: ConnectionType) -> None:
+    """The other half of the same rule: someone who types a bare name means the
+    directory in their own home, and must keep getting it."""
+    connection = Connection(
+        name="vm",
+        type=connection_type,
+        host="10.1.1.26",
+        username="gee",
+        base_path="upload",
+    )
+    assert rcloneconf.display_path(connection) == "upload"
+
+
+def test_smb_is_still_share_relative() -> None:
+    """SMB genuinely is relative to the share, so a leading slash must not
+    survive into remote:Share/path."""
+    connection = Connection(
+        name="nas",
+        type=ConnectionType.smb,
+        host="nas",
+        share="Backups",
+        base_path="/old/2024",
+    )
+    assert rcloneconf.display_path(connection) == "Backups/old/2024"
+
+
+def test_an_rclone_remote_path_is_anchored_to_the_remote_root() -> None:
+    """An object store rejects a key beginning with a slash, so this one keeps
+    stripping."""
+    connection = Connection(
+        name="via-config",
+        type=ConnectionType.rclone_remote,
+        rclone_mode=RcloneMode.imported,
+        rclone_remote_name="s3",
+        base_path="/bucket/prefix",
+    )
+    assert rcloneconf.display_path(connection) == "bucket/prefix"
+
+
+def test_a_subpath_joins_onto_an_absolute_base() -> None:
+    connection = Connection(
+        name="vm",
+        type=ConnectionType.sftp,
+        host="10.1.1.26",
+        username="root",
+        base_path="/home/gee/docker",
+    )
+    assert rcloneconf.display_path(connection, "authentik") == "/home/gee/docker/authentik"

@@ -145,13 +145,31 @@ def _decrypt_credential(credential: Credential, box: SecretBox, redactor: Redact
     return SecretValues(options=options, redactable=tuple(redactable))
 
 
+# Backends where a leading slash is meaningful: rclone reads a path without one
+# as relative to the login user's home or login directory, and a path with one as
+# absolute from the server root.
+_ABSOLUTE_PATH_TYPES = frozenset({ConnectionType.sftp, ConnectionType.ftp, ConnectionType.ftps})
+
+
 def _base_path_for(connection: Connection) -> str:
     """The path portion that follows `remote:`.
 
-    SMB is the special case: rclone addresses it as `remote:Share/sub/path`, so
-    the share is the first path element rather than a backend option. SPEC 5.1.
+    Two special cases, and they pull in opposite directions.
+
+    SMB is share-relative: rclone addresses it as `remote:Share/sub/path`, so the
+    share is the first path element rather than a backend option, and the rest is
+    relative to it. SPEC 5.1.
+
+    **SFTP and FTP are not.** A path with no leading slash is relative to the
+    login user's home directory, so stripping the slash off `/home/gee/docker`
+    turns it into `~/home/gee/docker`, which for root is `/root/home/gee/docker`
+    and does not exist. The endpoint connects, the listing fails, and the error
+    says the path is missing while the path on screen looks right. This is the
+    same mistake as the archive one at M6: a `remote:` prefix does not make what
+    follows it relative.
     """
-    base = (connection.base_path or "").strip("/")
+    raw = connection.base_path or ""
+    base = raw.strip("/")
     if connection.type == ConnectionType.smb:
         share = (connection.share or "").strip("/")
         if not share:
@@ -163,6 +181,10 @@ def _base_path_for(connection: Connection) -> str:
     if connection.type == ConnectionType.local:
         # Local paths are absolute and must not be stripped.
         return connection.base_path or "/"
+    if connection.type in _ABSOLUTE_PATH_TYPES and raw.startswith("/"):
+        return f"/{base}"
+    # rclone_remote keeps stripping: its path is anchored to the remote's own
+    # root, and an object store rejects a key that starts with a slash.
     return base
 
 

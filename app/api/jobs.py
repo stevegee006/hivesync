@@ -372,14 +372,36 @@ def stream_run(
     Reads from the in-process broker rather than the database: a stream stays
     open for the length of a sync, and holding a SQLite session that long would
     block writers.
+
+    **The stream always ends with a `done` event.** The client closes on `done`
+    and reloads; anything else leaves it watching a pane that will never update.
+    Two cases made that happen: a run that failed, where nothing published a
+    final event before the broker closed the channel, and a browser connecting
+    just after a short run ended, where the end signal had already been sent to
+    whoever was listening at the time. Both looked like the UI hanging, and the
+    second one also leaked a connection per visit until the browser hit its
+    six-per-host limit and stopped talking to the application altogether.
     """
-    if session.get(JobRun, run_id) is None:
+    run = session.get(JobRun, run_id)
+    if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such run.")
 
+    # The database decides whether there is anything left to wait for, not the
+    # broker. The broker's memory of finished runs is per process, so after a
+    # restart every historical run looked live to it and every request for one
+    # hung forever.
+    live = run.status in (RunStatus.queued, RunStatus.running)
+    final = f"{run.status.value}."
+
     def emit() -> Iterator[str]:
-        for event in broker.subscribe(run_id):
+        saw_done = False
+        events = broker.subscribe(run_id) if live else iter(broker.backlog_for(run_id))
+        for event in events:
+            saw_done = saw_done or event.kind == "done"
             payload = json.dumps({"kind": event.kind, "text": event.text})
             yield f"data: {payload}\n\n"
+        if not saw_done:
+            yield f"data: {json.dumps({'kind': 'done', 'text': final})}\n\n"
 
     return StreamingResponse(
         emit(),
