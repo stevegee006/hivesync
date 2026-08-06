@@ -370,3 +370,54 @@ def test_the_filter_chips_carry_their_counts(authed_client: TestClient, settings
     assert re.search(r"action=new[^>]*>\s*new <span[^>]*>2</span>", flat), flat
     # A category with nothing in it says zero rather than vanishing.
     assert re.search(r"action=deleted[^>]*>\s*deleted <span[^>]*>0</span>", flat), flat
+
+
+# --------------------------------------------------------------------------
+# The per-file progress panel
+# --------------------------------------------------------------------------
+
+
+def _queued_run(settings, mode: RunMode) -> int:
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="ps", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="pd", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(
+        name="Progress", source_connection_id=source.id, dest_connection_id=dest.id, filters={}
+    )
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id, trigger=RunTrigger.manual, mode=mode, status=RunStatus.running, summary={}
+    )
+    session.add(run)
+    session.commit()
+    return run.id
+
+
+def test_a_live_run_renders_the_progress_panel(authed_client: TestClient, settings) -> None:
+    page = authed_client.get(f"/runs/{_queued_run(settings, RunMode.live)}").text
+
+    assert 'id="progress"' in page
+    assert 'data-progress="files"' in page
+
+
+def test_a_dry_run_renders_no_progress_panel(authed_client: TestClient, settings) -> None:
+    """Verified against rclone 1.74.4: a dry run carries no `transferring` array
+    and reports every would-be transfer as complete the moment it is planned. A
+    bar there would claim data moved when nothing did."""
+    page = authed_client.get(f"/runs/{_queued_run(settings, RunMode.dry_run)}").text
+
+    assert 'id="progress"' not in page
+    # The live pane is still there; only the progress panel is withheld.
+    assert 'id="tail"' in page
+
+
+def test_the_shared_formatter_is_served(authed_client: TestClient) -> None:
+    """The panel and the activity strip share one implementation, so a missing
+    file breaks both silently: the script throws and the numbers never update."""
+    response = authed_client.get("/static/js/format.js")
+
+    assert response.status_code == 200
+    assert "HiveSync" in response.text

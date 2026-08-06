@@ -412,6 +412,24 @@ def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> None:
                     "speed": parsed.speed,
                     "eta": parsed.eta_seconds,
                     "percentage": parsed.percentage,
+                    "transfers": parsed.transfers,
+                    "total_transfers": parsed.total_transfers,
+                    # The files actually in flight, at most `--transfers` of
+                    # them. Verified against 1.74.4: a per-file `eta` is null
+                    # until rclone has enough history to estimate one, so the
+                    # run page has to render a row that has no ETA yet rather
+                    # than waiting for one.
+                    "files": [
+                        {
+                            "name": progress.name,
+                            "bytes": progress.bytes_done,
+                            "size": progress.size,
+                            "percentage": progress.percentage,
+                            "speed": progress.speed,
+                            "eta": progress.eta_seconds,
+                        }
+                        for progress in parsed.transferring
+                    ],
                 },
             ),
         )

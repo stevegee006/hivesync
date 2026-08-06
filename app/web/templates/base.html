@@ -10,6 +10,9 @@
      without JavaScript, so a missing asset degrades rather than breaks. #}
   <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
+  {# Not deferred: the inline scripts on this page and on the run detail page
+     call into it while the document is still parsing. #}
+  <script src="/static/js/format.js"></script>
 </head>
 {# hx-headers is inherited by every htmx request on the page, so a partial post
    carries the token without each hx-post repeating it. htmx sends no form body
@@ -143,15 +146,8 @@
 
       function el(name) { return strip.querySelector('[data-activity="' + name + '"]'); }
 
-      function bytes(value) {
-        var units = ["B", "KB", "MB", "GB", "TB"];
-        var index = 0;
-        var amount = Number(value) || 0;
-        while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index++; }
-        return (index === 0 ? amount.toFixed(0) : amount.toFixed(1)) + " " + units[index];
-      }
-
-      function rate(value) { return bytes(value) + "/s"; }
+      var bytes = window.HiveSync.bytes;
+      var rate = window.HiveSync.rate;
 
       function draw(samples) {
         var chart = el("chart");

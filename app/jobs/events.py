@@ -52,6 +52,10 @@ class RunBroker:
         # than an empty pane until the next line arrives.
         self._backlog: dict[int, list[RunEvent]] = {}
         self._backlog_limit = 200
+        # The most recent stats event per run, held apart from the backlog. See
+        # `publish`. Replayed on subscribe so a page opened mid transfer draws
+        # its progress bars straight away rather than after the next tick.
+        self._latest_stats: dict[int, RunEvent] = {}
         # Runs that have already ended. `finish` delivers its sentinel to the
         # subscribers that exist at that moment, so a subscriber arriving one
         # moment later would wait for an end signal that already happened and
@@ -61,10 +65,22 @@ class RunBroker:
 
     def publish(self, run_id: int, event: RunEvent) -> None:
         with self._lock:
-            backlog = self._backlog.setdefault(run_id, [])
-            backlog.append(event)
-            if len(backlog) > self._backlog_limit:
-                del backlog[: len(backlog) - self._backlog_limit]
+            if event.kind == "stats":
+                # Progress and the log are different things with different
+                # retention. One stats event every few seconds would fill a
+                # bounded backlog and evict the log lines, which are what
+                # someone actually reads when a run fails: at --stats 5s a
+                # twenty minute sync produces more stats events than the
+                # backlog holds, so a browser joining mid-run would see a
+                # progress bar and an empty log. Only the most recent one is
+                # kept, and that is all a late joiner needs, since the next
+                # event supersedes it anyway.
+                self._latest_stats[run_id] = event
+            else:
+                backlog = self._backlog.setdefault(run_id, [])
+                backlog.append(event)
+                if len(backlog) > self._backlog_limit:
+                    del backlog[: len(backlog) - self._backlog_limit]
             subscribers = list(self._subscribers.get(run_id, []))
 
         for subscriber in subscribers:
@@ -88,6 +104,7 @@ class RunBroker:
                 subscriber.put_nowait(None)
         with self._lock:
             self._backlog.pop(run_id, None)
+            self._latest_stats.pop(run_id, None)
             self._finished[run_id] = None
             while len(self._finished) > _FINISHED_MEMORY:
                 self._finished.popitem(last=False)
@@ -106,6 +123,7 @@ class RunBroker:
         channel: queue.Queue[RunEvent | None] = queue.Queue(maxsize=_QUEUE_SIZE)
         with self._lock:
             backlog = list(self._backlog.get(run_id, []))
+            latest_stats = self._latest_stats.get(run_id)
             already_finished = run_id in self._finished
             if not already_finished:
                 self._subscribers.setdefault(run_id, []).append(channel)
@@ -118,6 +136,8 @@ class RunBroker:
 
         try:
             yield from backlog
+            if latest_stats is not None:
+                yield latest_stats
             while True:
                 try:
                     event = channel.get(timeout=15)

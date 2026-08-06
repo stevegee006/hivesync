@@ -6,6 +6,7 @@ here, so the tests are built on a stats object captured verbatim mid transfer.
 
 from __future__ import annotations
 
+import itertools
 import json
 
 from fastapi.testclient import TestClient
@@ -479,3 +480,125 @@ def test_resetting_mid_run_counts_only_what_follows(authed_client: TestClient) -
     finally:
         activity.forget(99)
         activity.reset_session()
+
+
+# --------------------------------------------------------------------------
+# Per-file progress on the run page
+# --------------------------------------------------------------------------
+
+# Two files in flight at once, captured from rclone 1.74.4 with --transfers 4.
+# The per-file `eta` is null here, which is what rclone reports until it has
+# enough history to estimate one. A row has to render without it.
+TWO_IN_FLIGHT = json.loads(
+    """
+{"bytes":21093152,"elapsedTime":1.0,"errors":0,"eta":null,"speed":41986000.0,
+ "totalBytes":300000000,"totalTransfers":2,"transfers":0,
+ "transferring":[{"bytes":10874880,"dstFs":"/tmp/pb","eta":null,
+                  "group":"global_stats","name":"big.bin","percentage":5,
+                  "size":200000000,"speed":21821871.4,"speedAvg":0,
+                  "srcFs":"/tmp/pa"},
+                 {"bytes":10219520,"dstFs":"/tmp/pb","eta":null,
+                  "group":"global_stats","name":"mid.bin","percentage":10,
+                  "size":100000000,"speed":20523095.3,"speedAvg":0,
+                  "srcFs":"/tmp/pa"}]}
+"""
+)
+
+
+_run_ids = itertools.count(987654)
+
+
+def _published_stats(payload: dict[str, object]) -> dict[str, object]:
+    """Absorb one stats line and return the data of the event it published.
+
+    A fresh run id each time: the broker remembers finished runs so that a
+    browser arriving late is not left hanging, which means a reused id is
+    closed before the second test subscribes.
+    """
+    from app.jobs import events
+    from app.jobs.runner import _absorb
+
+    run_id = next(_run_ids)
+    try:
+        # rclone carries the stats object inside an ordinary log record.
+        line = json.dumps({"level": "info", "msg": "", "stats": payload})
+        _absorb(parsers.DryRunLog(), line, run_id)
+        # Subscribing afterwards on purpose: a stats event has to survive until
+        # a browser connects, which is the whole point of replaying the latest.
+        for event in events.broker.subscribe(run_id):
+            if event.kind == "stats":
+                return event.data
+            break
+    finally:
+        events.broker.finish(run_id)
+    raise AssertionError("no stats event was published")
+
+
+def test_the_run_stream_carries_each_file_in_flight() -> None:
+    """The page cannot show per-file progress that the event does not carry, and
+    for a while the event dropped the whole `transferring` array."""
+    data = _published_stats(TWO_IN_FLIGHT)
+
+    files = data["files"]
+    assert [f["name"] for f in files] == ["big.bin", "mid.bin"]
+    assert [f["percentage"] for f in files] == [5, 10]
+    assert [f["size"] for f in files] == [200000000, 100000000]
+    assert round(files[0]["speed"]) == 21821871
+
+
+def test_a_file_with_no_estimate_yet_still_reports_progress() -> None:
+    """rclone reports a null per-file eta until it has history. Dropping the row
+    until an ETA exists would leave the panel empty for the first few seconds of
+    every transfer."""
+    data = _published_stats(TWO_IN_FLIGHT)
+
+    assert all(f["eta"] is None for f in data["files"])
+    assert all(f["bytes"] > 0 for f in data["files"])
+
+
+def test_a_transfer_with_nothing_in_flight_publishes_an_empty_list() -> None:
+    """Not a missing key: the page reads `files` on every event."""
+    payload = dict(TWO_IN_FLIGHT)
+    payload.pop("transferring")
+
+    data = _published_stats(payload)
+
+    assert data["files"] == []
+    assert data["total_bytes"] == 300000000
+
+
+def test_stats_events_never_evict_the_log_backlog() -> None:
+    """They used to. Every event went into one 200 entry list, so at --stats 5s
+    a twenty minute sync pushed every log line out of it and a browser opening
+    the run page mid transfer saw progress bars above an empty log."""
+    from app.jobs.events import RunBroker
+
+    broker = RunBroker()
+    broker.publish(1, RunEvent(kind="line", text="the line that matters"))
+    for _ in range(500):
+        broker.publish(1, RunEvent(kind="stats", data={"bytes": 1}))
+
+    replayed = list(broker.backlog_for(1))
+
+    assert [event.text for event in replayed] == ["the line that matters"]
+
+
+def test_a_page_opened_mid_transfer_gets_the_current_progress() -> None:
+    """Otherwise the panel stays blank until the next stats tick, which is up to
+    the whole --stats interval away."""
+    from app.jobs.events import RunBroker
+
+    broker = RunBroker()
+    broker.publish(2, RunEvent(kind="line", text="starting"))
+    broker.publish(2, RunEvent(kind="stats", data={"percentage": 40}))
+    broker.publish(2, RunEvent(kind="stats", data={"percentage": 70}))
+
+    seen = []
+    for event in broker.subscribe(2):
+        seen.append(event)
+        if event.kind == "stats":
+            break
+
+    # The latest, not every one of them: superseded progress is not history.
+    assert [event.kind for event in seen] == ["line", "stats"]
+    assert seen[-1].data == {"percentage": 70}

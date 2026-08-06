@@ -43,6 +43,28 @@
     </form>
   </div>
 
+  {# Per file progress, from the stats events rclone emits on the --stats
+     interval. Live runs only: verified against 1.74.4, a dry run carries no
+     `transferring` array at all and reports every would-be transfer as
+     complete the moment it is planned, so a bar here would claim data moved
+     when the whole point of the mode is that none did. #}
+  {% if run.mode.value != 'dry_run' %}
+  <div id="progress" class="mt-3 hidden">
+    <div class="flex items-baseline justify-between gap-3 text-xs">
+      <span class="text-slate-400" data-progress="caption"></span>
+      <span class="shrink-0 font-mono text-slate-500">
+        <span data-progress="done">0 B</span> of <span data-progress="total">0 B</span>
+        <span class="ml-2 text-slate-300" data-progress="speed"></span>
+        <span class="ml-2" data-progress="eta"></span>
+      </span>
+    </div>
+    <div class="mt-1 h-1.5 overflow-hidden rounded bg-slate-800">
+      <div data-progress="bar" class="h-full bg-sky-500 transition-all" style="width: 0%"></div>
+    </div>
+    <ul data-progress="files" class="mt-2 space-y-1.5"></ul>
+  </div>
+  {% endif %}
+
   {# Live output over SSE. Falls back to the polling below when EventSource is
      unavailable, so the page still progresses without JavaScript. #}
   <pre id="tail" class="mt-3 max-h-64 overflow-y-auto rounded bg-slate-950 p-2 font-mono text-xs text-slate-400"></pre>
@@ -58,10 +80,83 @@
         poller.removeAttribute("hx-trigger");
         poller.removeAttribute("hx-get");
       }
+      // Progress is a separate panel from the log, and stays out of the pane:
+      // a stats event every few seconds would flush the bounded log backlog,
+      // and the log is what someone reads when a run goes wrong.
+      var panel = document.getElementById("progress");
+      var fmt = window.HiveSync;
+      var rows = {};
+
+      function field(name) { return panel.querySelector('[data-progress="' + name + '"]'); }
+
+      function row(name) {
+        if (rows[name]) return rows[name];
+        var item = document.createElement("li");
+        item.innerHTML =
+          '<div class="flex items-baseline justify-between gap-3 text-xs">' +
+            '<span class="min-w-0 truncate font-mono text-slate-300" data-row="name"></span>' +
+            '<span class="shrink-0 font-mono text-slate-500">' +
+              '<span data-row="speed"></span><span data-row="eta"></span>' +
+            "</span>" +
+          "</div>" +
+          '<div class="mt-0.5 flex items-center gap-2">' +
+            '<div class="h-1 flex-1 overflow-hidden rounded bg-slate-800">' +
+              '<div data-row="bar" class="h-full bg-sky-600" style="width: 0%"></div>' +
+            "</div>" +
+            '<span class="w-10 shrink-0 text-right font-mono text-xs text-slate-500" data-row="pct"></span>' +
+          "</div>";
+        // textContent, never innerHTML: a file name is remote input and this
+        // page renders it back.
+        item.querySelector('[data-row="name"]').textContent = name;
+        field("files").appendChild(item);
+        rows[name] = item;
+        return item;
+      }
+
+      function progress(data) {
+        if (!panel || !fmt) return;
+        var files = data.files || [];
+        if (!files.length && !data.total_bytes) return;
+        panel.classList.remove("hidden");
+
+        field("done").textContent = fmt.bytes(data.bytes);
+        field("total").textContent = fmt.bytes(data.total_bytes);
+        field("speed").textContent = data.speed ? fmt.rate(data.speed) : "";
+        var eta = fmt.duration(data.eta);
+        field("eta").textContent = eta ? "ETA " + eta : "";
+        field("bar").style.width = (data.percentage || 0) + "%";
+        field("caption").textContent = files.length
+          ? files.length + (files.length === 1 ? " file in flight" : " files in flight")
+          : "Checking";
+
+        var live = {};
+        files.forEach(function (file) {
+          live[file.name] = true;
+          var item = row(file.name);
+          item.querySelector('[data-row="bar"]').style.width = (file.percentage || 0) + "%";
+          item.querySelector('[data-row="pct"]').textContent = (file.percentage || 0) + "%";
+          item.querySelector('[data-row="speed"]').textContent =
+            file.speed ? fmt.rate(file.speed) : "";
+          // Null until rclone has enough history to estimate one, so an early
+          // row shows a bar and a speed with no ETA beside it.
+          var left = fmt.duration(file.eta);
+          item.querySelector('[data-row="eta"]').textContent = left ? "  ETA " + left : "";
+        });
+
+        // A file that finished is gone from the array rather than reported as
+        // complete, so anything not named this time is done with.
+        Object.keys(rows).forEach(function (name) {
+          if (live[name]) return;
+          rows[name].remove();
+          delete rows[name];
+        });
+      }
+
       var source = new EventSource("/api/runs/{{ run.id }}/stream");
       source.onmessage = function (event) {
         var payload = JSON.parse(event.data);
-        if (payload.kind === "ping" || payload.kind === "stats") return;
+        if (payload.kind === "ping") return;
+        if (payload.kind === "stats") { progress(payload.data || {}); return; }
         pane.textContent += payload.text + "\n";
         pane.scrollTop = pane.scrollHeight;
         if (payload.kind === "done") { source.close(); window.location.reload(); }

@@ -275,6 +275,9 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-06, ux, **an HTMX poll and an SSE stream on the same element fight each other.** The run detail page still carried the M2 poll, whose own comment said M3 would replace it. Its two second swap replaced the element containing the live pane, wiping the streamed output each time, and the page looked like it was refreshing on a loop. When adding a live channel, remove the polling it replaces, or scope the poll to something the stream does not own.
 - 2026-08-06, ux, a derived figure that is legitimately zero reads as broken. Up and down speed are derived from the job, so a remote-to-remote sync attributed to neither direction showed `0 B/s` in the network panel while a transfer was plainly running. Two fixes, both needed: count a remote-to-remote job in **both** directions, since the bytes really do arrive and leave through this machine, and always show a total alongside the split.
 - 2026-08-06, ux, **a filter control must never be rendered inside a condition on the filtered result.** The run detail page guarded both the SHOW bar and the results table with `{% if changes %}`, and `changes` is the filtered list, so filtering to a category the run happened to have none of removed the only way back to "all". The escape route was editing the URL. Render a filter from the unfiltered totals, which means the route owes the template a separate count query, and annotate each option with its count so an empty category is visibly empty before it is clicked rather than after. The empty state has to distinguish "nothing changed" from "nothing of this kind changed": the page was telling the reader "Nothing would change" about a run that had created a file.
+- 2026-08-06, rclone, **a dry run reports no `transferring` array at all, and reports every would-be transfer as already complete.** Verified against 1.74.4 with 40 files: `transfers: 40, totalTransfers: 40, bytes == totalBytes` within two milliseconds of stats time, and `checks: 0`. So per-file progress is a live-run feature by nature, not by choice, and a progress bar on a dry run would claim data moved in the one mode whose whole point is that none did. What a dry run does report progressively is `listed`, which is not currently parsed.
+- 2026-08-06, rclone, a per-file `eta` inside `transferring` is **null until rclone has enough history to estimate one**, and the top-level `eta` can be null while files are plainly moving. Verified: with `--transfers 4` both files reported `eta: null` and `speedAvg: 0` for the first few seconds, then populated. A row has to render with a bar and a speed and no ETA beside it, rather than being withheld until the estimate exists, or the panel is empty for the opening seconds of every transfer.
+- 2026-08-06, design, **a claim in this file was false and nothing caught it for a milestone.** M9 recorded "stats never evict log lines" while `RunBroker.publish` appended every event, stats included, to one bounded backlog: at `--stats 5s` a twenty minute sync overflows a 200 entry list with stats alone, so a browser joining mid-run would have seen progress above an empty log. The comment at the call site said the right thing, which is probably why nobody checked the thing it described. A design note is not a test. Where this file claims a property, there should be a test named after it.
 
 ### M1 acceptance status, verified 2026-08-05
 
@@ -318,6 +321,12 @@ those against the browser's six-per-host limit.
 **Live stats are kept apart from the log backlog.** Progress arrives every few
 seconds for the length of a sync; folding it into the same bounded backlog would
 evict the log lines, which are what someone reads when a run goes wrong.
+**This was written at M9 and was not true until the per-file work below.** The
+stats were kept out of the *dashboard's* path but `RunBroker.publish` appended
+every event to the one 200 entry backlog regardless of kind, so criterion 2 was
+false as recorded. Only the most recent stats event is kept now, in its own slot,
+and it is replayed on subscribe so a page opened mid transfer draws its bars at
+once instead of waiting for the next tick.
 
 **Session means the current burst, not the process lifetime.** It clears when the
 last active run finishes. Resilio's equivalent runs from app start and has a
@@ -351,7 +360,9 @@ Acceptance criteria, all six met:
 1. A running job shows speed, ETA, percentage and the current file, updating as
    it goes and clearing when it ends. Measured at 100 MB/s against the sandbox.
 2. Stats never evict log lines, and the dashboard opens one connection whatever
-   is running.
+   is running. **Recorded as met at M9 and was not.** Half of it was: one
+   connection, yes. Eviction was only fixed when the per-file panel was added,
+   and it is now pinned by `test_stats_events_never_evict_the_log_backlog`.
 3. A continuous job re-runs at the floor after a change and widens to the ceiling
    when idle.
 4. Continuous plus bidirectional is refused, as is continuous plus a schedule.
