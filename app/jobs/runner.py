@@ -424,7 +424,16 @@ def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> None:
     if isinstance(obj, str) and obj:
         size = payload.get("size")
         size_value = size if isinstance(size, int) and size >= 0 else None
-        if message.startswith("Copied") or message.startswith("Updated"):
+        # "Copied" as a substring, not a prefix. Verified against rclone 1.74.4,
+        # a file large enough for the multi-thread path logs "Multi-thread
+        # Copied (new)", so matching the start of the message silently missed
+        # every large transfer: a 3 GB file recorded as zero files and zero
+        # bytes, and the lifetime total on the dashboard was wrong by that much.
+        #
+        # "Updated modification time in destination" is deliberately not a
+        # transfer. It was matched before by startswith("Updated"), which
+        # counted a modtime-only touch as a transferred file.
+        if "Copied" in message:
             observed.operations.append(
                 parsers.PlannedOperation(path=obj, operation=parsers.SKIPPED_COPY, size=size_value)
             )
@@ -449,6 +458,15 @@ def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> None:
             observed.max_delete_hit = True
         detail = f"{obj}: {message}" if isinstance(obj, str) and obj else message
         observed.errors.append(detail.strip())
+
+
+def _bytes_transferred(observed: parsers.DryRunLog, copied: list[parsers.PlannedOperation]) -> int:
+    """Bytes moved, preferring rclone's own total over our reconstruction."""
+    if isinstance(observed.stats, dict):
+        reported = observed.stats.get("bytes")
+        if isinstance(reported, int) and reported >= 0:
+            return reported
+    return sum(op.size or 0 for op in copied)
 
 
 def _record(
@@ -509,7 +527,11 @@ def _record(
     run.files_transferred = len(copied)
     run.files_deleted = len(deleted)
     run.files_archived = len(archived)
-    run.bytes_transferred = sum(op.size or 0 for op in copied)
+    # rclone's own accounting where we have it. Summing per-file sizes counts a
+    # whole file even when only part of it moved, and depends on every message
+    # being recognised, which is exactly what went wrong with multi-thread
+    # copies. The stats block is the figure rclone itself reports.
+    run.bytes_transferred = _bytes_transferred(observed, copied)
     run.errors_count = len(observed.errors)
     run.log_path = str(log_path)
     run.summary = {

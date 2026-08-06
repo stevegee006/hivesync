@@ -163,9 +163,10 @@ class ActivityRecorder:
     are the thing someone actually reads when a run goes wrong. So the latest
     stats live here, one per run, replaced rather than accumulated.
 
-    Session totals reset when the process does, which matches what they mean:
-    "since this instance started". The lifetime figure comes from the database
-    instead, where it belongs.
+    Session totals cover the current burst of activity: they accumulate while
+    something is running and clear once everything has finished. The lifetime
+    figure comes from the database instead, where it belongs, and is untouched
+    by any of this.
     """
 
     def __init__(self) -> None:
@@ -203,6 +204,12 @@ class ActivityRecorder:
         Without the extra sample the chart holds its last speed flat until the
         next one arrives, which reads as "still transferring at 60 MB/s" for
         several seconds after a sync has stopped.
+
+        **Going idle clears the session figures.** Session here means this burst
+        of activity rather than the lifetime of the process, so once nothing is
+        running there is no session to report and the panel returns to zero.
+        The lifetime total is unaffected: it comes from the database and is the
+        figure that answers "how much has this ever moved".
         """
         with self._lock:
             self._latest.pop(run_id, None)
@@ -211,6 +218,10 @@ class ActivityRecorder:
                 float(getattr(entry, "speed", 0.0) or 0.0) for entry in self._latest.values()
             )
             self._samples.append(SpeedSample(at=time.time(), speed=total))
+            if not self._latest:
+                self._session_bytes = 0
+                self._session_max_speed = 0.0
+                self._counted.clear()
 
     def latest(self, run_id: int) -> object | None:
         with self._lock:
@@ -224,6 +235,22 @@ class ActivityRecorder:
         cutoff = time.time() - since_seconds
         with self._lock:
             return [sample for sample in self._samples if sample.at >= cutoff]
+
+    def reset_session(self) -> None:
+        """Zero the session figures without disturbing anything in flight.
+
+        Going idle clears them anyway; this is for clearing them part way
+        through a long run. Anything in progress keeps its baseline, so only
+        bytes from here on are counted rather than the run starting again from
+        its own total.
+        """
+        with self._lock:
+            self._session_bytes = 0
+            self._session_max_speed = 0.0
+            self._counted = {
+                run_id: int(getattr(stats, "bytes_done", 0) or 0)
+                for run_id, stats in self._latest.items()
+            }
 
     def session(self) -> tuple[int, float]:
         """Bytes transferred and the peak speed seen since this process started."""

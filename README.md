@@ -324,8 +324,12 @@ Every page carries a strip along the bottom showing what is happening now:
   measured, and labelled that way.
 - **A chart** over the last minute, ten minutes or hour, drawn from samples taken
   every five seconds.
-- **Session** totals since the process started, and **lifetime** bytes from the
-  run history, which is the one figure that survives a restart.
+- **Session** totals for the current burst of activity: they accumulate while
+  something is running and clear once everything finishes, so an idle strip
+  reads zero rather than showing figures from an hour ago. There is a reset
+  control for clearing them part way through a long run.
+- **Lifetime** bytes from the run history, which is the figure that survives a
+  restart and is untouched by any of the above.
 
 It polls one endpoint every two seconds while something is running and every
 fifteen when idle, so the whole page uses a single connection no matter how many

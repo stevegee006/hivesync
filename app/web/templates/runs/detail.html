@@ -2,9 +2,13 @@
 {% block title %}Run {{ run.id }}{% endblock %}
 
 {% block content %}
-{# While the run is active the page polls. M3 replaces this with Server-Sent
-   Events; the run row and its states are the same either way. #}
-<div {% if run.status.value in ('queued', 'running') %}
+{# The no-JavaScript fallback: poll the summary while the run is active. The
+   SSE script below removes these attributes as soon as it starts, because the
+   two together fight each other. The poll replaces the element containing the
+   live pane, so every swap wiped the streamed output and the page looked like
+   it was refreshing on a loop. It was: this is the M2 polling that M3's comment
+   said would be replaced and never was. #}
+<div id="run-poll" {% if run.status.value in ('queued', 'running') %}
        hx-get="/runs/{{ run.id }}" hx-trigger="every 2s" hx-select="#run-body" hx-target="#run-body"
      {% endif %}>
 <div id="run-body">
@@ -46,10 +50,18 @@
     (function () {
       var pane = document.getElementById("tail");
       if (!pane || typeof EventSource === "undefined") return;
+
+      // Streaming from here on, so stop the fallback poll swapping the DOM out
+      // from under it.
+      var poller = document.getElementById("run-poll");
+      if (poller) {
+        poller.removeAttribute("hx-trigger");
+        poller.removeAttribute("hx-get");
+      }
       var source = new EventSource("/api/runs/{{ run.id }}/stream");
       source.onmessage = function (event) {
         var payload = JSON.parse(event.data);
-        if (payload.kind === "ping") return;
+        if (payload.kind === "ping" || payload.kind === "stats") return;
         pane.textContent += payload.text + "\n";
         pane.scrollTop = pane.scrollHeight;
         if (payload.kind === "done") { source.close(); window.location.reload(); }

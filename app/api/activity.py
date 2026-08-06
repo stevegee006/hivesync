@@ -10,8 +10,15 @@ by a single request every couple of seconds.
 figure; the direction is a property of the job, not of the transfer. So the split
 here is derived from where the job writes: to a remote destination is outbound,
 from a remote source to a local one is inbound, and local to local is neither.
-Derived and labelled as such, rather than drawing two lines that are secretly the
-same number.
+
+A job between **two remotes** counts towards both, because that is what is
+physically happening: the bytes arrive from one endpoint and leave for the other
+through this machine, so it really is receiving and sending at that rate. It is
+also the common shape here, and reporting it as neither left the network panel
+reading zero while a transfer was plainly running.
+
+`total_speed` is the sum of the runs themselves rather than of the two
+directions, so a remote-to-remote transfer is not counted twice in the total.
 """
 
 from __future__ import annotations
@@ -86,6 +93,13 @@ def direction_of(job: Job) -> str:
     return "local"
 
 
+@router.post("/activity/reset-session", status_code=204)
+def reset_session(_user: CurrentUser) -> None:
+    """Zero the session counters. Lifetime, which lives in the database, is
+    untouched."""
+    activity.reset_session()
+
+
 @router.get("/activity", response_model=ActivityResponse)
 def read_activity(_user: CurrentUser, session: DbSession, window: str = "1m") -> ActivityResponse:
     seconds = WINDOWS.get(window, 60)
@@ -103,9 +117,9 @@ def read_activity(_user: CurrentUser, session: DbSession, window: str = "1m") ->
             if not isinstance(stats, TransferStats):
                 continue
             heading = direction_of(job)
-            if heading == "up":
+            if heading in ("up", "both"):
                 up += stats.speed
-            elif heading == "down":
+            if heading in ("down", "both"):
                 down += stats.speed
 
             busiest = max(stats.transferring, key=lambda item: item.speed, default=None)

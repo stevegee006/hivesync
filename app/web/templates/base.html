@@ -70,8 +70,12 @@
        class="fixed inset-x-0 bottom-0 border-t border-slate-800 bg-slate-950/95 backdrop-blur">
     <div class="mx-auto flex max-w-7xl flex-wrap items-stretch gap-4 px-4 py-2 text-xs">
 
-      <div class="w-40 shrink-0 space-y-1">
+      <div class="w-44 shrink-0 space-y-1">
         <p class="uppercase tracking-wide text-slate-500">Network</p>
+        {# The total is always shown. Up and down are derived from the job, so
+           they can legitimately be zero while a transfer is running, and a
+           panel reading 0 B/s during a sync reads as broken. #}
+        <p class="font-mono text-slate-200" data-activity="total">0 B/s</p>
         <p class="text-emerald-400">
           &#9650; <span data-activity="up">0 B/s</span>
         </p>
@@ -103,7 +107,14 @@
       </div>
 
       <div class="w-44 shrink-0 space-y-1 border-l border-slate-800 pl-4">
-        <p class="uppercase tracking-wide text-slate-500">Session</p>
+        <p class="flex items-center justify-between uppercase tracking-wide text-slate-500">
+          Session
+          {# Explicit, like Resilio's. Not automatic on idle: a sync that
+             finishes while nobody is watching would erase its own total before
+             anyone saw it. #}
+          <button type="button" data-activity="reset" title="Reset the session totals"
+                  class="text-slate-600 hover:text-slate-300">&#8635;</button>
+        </p>
         <p class="text-slate-300">
           peak <span class="font-mono" data-activity="session-peak">0 B/s</span>
         </p>
@@ -159,6 +170,7 @@
       }
 
       function apply(data) {
+        el("total").textContent = rate(data.total_speed);
         el("up").textContent = rate(data.up_speed);
         el("down").textContent = rate(data.down_speed);
         el("session-peak").textContent = rate(data.session_max_speed);
@@ -196,6 +208,16 @@
           .then(function (response) { return response.ok ? response.json() : null; })
           .then(function (data) { if (data) apply(data); else schedule(15000); })
           .catch(function () { schedule(15000); });
+      }
+
+      var resetButton = el("reset");
+      if (resetButton) {
+        resetButton.addEventListener("click", function () {
+          fetch("/api/activity/reset-session", {
+            method: "POST",
+            headers: { "X-CSRF-Token": "{{ csrf_token() }}" }
+          }).then(poll);
+        });
       }
 
       strip.querySelectorAll("[data-window]").forEach(function (button) {

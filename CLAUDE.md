@@ -271,6 +271,10 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-06, ops, **a run left in `running` by a restart blocks its job forever.** The partial unique index refuses a second active run, so every later cycle hits the overlap guard: a scheduled job records skip after skip and a continuous job stops looking entirely, with nothing in the log saying why. Startup now fails those rows with an explanation rather than deleting them, because work may have happened on disk before the process died and the next run's brake reads the resulting state. Found by restarting the container mid-sync.
 - 2026-08-06, ux, a progress feed and a log are different things with different retention. Stats every few seconds will flush a bounded log backlog if they share it, and the log is what someone actually reads when a run fails.
 
+- 2026-08-06, rclone, **the transfer message wording is not one string, and matching its start silently loses large files.** Verified against 1.74.4: a file over the multi-thread cutoff logs `Multi-thread Copied (new)`, not `Copied (new)`, so `startswith("Copied")` recorded a 3 GB transfer as zero files and zero bytes. The run history, the lifetime total on the dashboard and the `hivesync_*` counters were all wrong by that much, and nothing failed. In the same family: `Updated modification time in destination` moves no data, and `startswith("Updated")` was counting it as a transferred file. Match `"Copied" in message`, and take bytes from the stats block, which is rclone's own accounting and immune to wording.
+- 2026-08-06, ux, **an HTMX poll and an SSE stream on the same element fight each other.** The run detail page still carried the M2 poll, whose own comment said M3 would replace it. Its two second swap replaced the element containing the live pane, wiping the streamed output each time, and the page looked like it was refreshing on a loop. When adding a live channel, remove the polling it replaces, or scope the poll to something the stream does not own.
+- 2026-08-06, ux, a derived figure that is legitimately zero reads as broken. Up and down speed are derived from the job, so a remote-to-remote sync attributed to neither direction showed `0 B/s` in the network panel while a transfer was plainly running. Two fixes, both needed: count a remote-to-remote job in **both** directions, since the bytes really do arrive and leave through this machine, and always show a total alongside the split.
+
 ### M1 acceptance status, verified 2026-08-05
 
 All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,
@@ -313,6 +317,13 @@ those against the browser's six-per-host limit.
 **Live stats are kept apart from the log backlog.** Progress arrives every few
 seconds for the length of a sync; folding it into the same bounded backlog would
 evict the log lines, which are what someone reads when a run goes wrong.
+
+**Session means the current burst, not the process lifetime.** It clears when the
+last active run finishes. Resilio's equivalent runs from app start and has a
+manual reset, and that was built first; the operator asked twice for it to clear
+on idle, on the grounds that stale figures under an IDLE label read as wrong. The
+manual reset stays for clearing part way through a long run. Lifetime, which
+comes from the database, is untouched by either.
 
 **Continuous mode is polling, and says so.** `ChangeNotify` is false for local,
 sftp, ftp and smb alike, verified against 1.74.4, so no backend here can announce

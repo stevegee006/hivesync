@@ -269,3 +269,213 @@ def test_the_window_selects_how_much_history_is_returned(authed_client: TestClie
 
 def test_activity_requires_authentication(client: TestClient) -> None:
     assert client.get("/api/activity").status_code == 401
+
+
+# --------------------------------------------------------------------------
+# Counting what rclone actually says it did
+# --------------------------------------------------------------------------
+
+# Captured from rclone 1.74.4. The message wording is the whole point of these.
+COPY_LINES = {
+    "new": '{"level":"info","msg":"Copied (new)","size":10,"object":"a.txt"}',
+    "replaced": '{"level":"info","msg":"Copied (replaced existing)","size":20,"object":"b.txt"}',
+    # A file over --multi-thread-cutoff. This prefix is why a 3 GB transfer was
+    # recorded as zero files and zero bytes.
+    "multithread": (
+        '{"level":"info","msg":"Multi-thread Copied (new)","size":3033782870,"object":"big.mkv"}'
+    ),
+}
+MODTIME_LINE = (
+    '{"level":"info","msg":"Updated modification time in destination","size":10,"object":"c.txt"}'
+)
+
+
+def _absorbed(*lines: str) -> parsers.DryRunLog:
+    from app.engines import parsers as p
+    from app.jobs.runner import _absorb
+
+    observed = p.DryRunLog()
+    for line in lines:
+        _absorb(observed, line, 1)
+    return observed
+
+
+def test_a_multi_thread_copy_is_a_transfer() -> None:
+    """rclone prefixes the message for a file large enough to split, so matching
+    the start of the message missed every large transfer."""
+    observed = _absorbed(COPY_LINES["multithread"])
+
+    assert [op.path for op in observed.copies] == ["big.mkv"]
+    assert observed.copies[0].size == 3033782870
+
+
+def test_every_copy_wording_counts() -> None:
+    observed = _absorbed(*COPY_LINES.values())
+    assert len(observed.copies) == 3
+
+
+def test_a_modification_time_update_is_not_a_transfer() -> None:
+    """It moves no data. Counting it inflated files_transferred with a file that
+    never crossed the wire."""
+    observed = _absorbed(MODTIME_LINE)
+
+    assert observed.copies == []
+    assert observed.removals == []
+
+
+def test_bytes_come_from_rclones_own_total_when_it_reports_one() -> None:
+    """Summing per-file sizes counts a whole file even when only part of it
+    moved, and depends on every message wording being recognised."""
+    from app.engines import parsers as p
+    from app.jobs.runner import _bytes_transferred
+
+    observed = p.DryRunLog()
+    observed.stats = {"bytes": 999}
+    copied = [p.PlannedOperation(path="a", operation=p.SKIPPED_COPY, size=10)]
+
+    assert _bytes_transferred(observed, copied) == 999
+
+
+def test_bytes_fall_back_to_the_file_sizes_without_stats() -> None:
+    from app.engines import parsers as p
+    from app.jobs.runner import _bytes_transferred
+
+    copied = [
+        p.PlannedOperation(path="a", operation=p.SKIPPED_COPY, size=10),
+        p.PlannedOperation(path="b", operation=p.SKIPPED_COPY, size=32),
+    ]
+    assert _bytes_transferred(p.DryRunLog(), copied) == 42
+
+
+# --------------------------------------------------------------------------
+# The session figures
+# --------------------------------------------------------------------------
+
+
+def test_a_remote_to_remote_transfer_counts_both_ways(
+    authed_client: TestClient, settings: Settings
+) -> None:
+    """The bytes arrive from one endpoint and leave for the other through this
+    machine, so it really is receiving and sending. Reporting it as neither left
+    the panel reading zero during an obvious transfer."""
+    from app.jobs.events import activity
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="sftp-a", type=ConnectionType.sftp, host="a", base_path="/x")
+    dest = Connection(name="smb-b", type=ConnectionType.smb, host="b", share="S", base_path="")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(
+        name="Remote to remote",
+        source_connection_id=source.id,
+        dest_connection_id=dest.id,
+        filters={},
+    )
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id, trigger=RunTrigger.manual, mode=RunMode.live, status=RunStatus.running
+    )
+    session.add(run)
+    session.commit()
+
+    activity.record(run.id, parsers.parse_stats({"bytes": 1, "speed": 1000}))
+    try:
+        body = authed_client.get("/api/activity").json()
+    finally:
+        activity.forget(run.id)
+
+    assert body["up_speed"] == 1000
+    assert body["down_speed"] == 1000
+    # The total is the transfer itself, not the two directions added together.
+    assert body["total_speed"] == 1000
+
+
+def test_going_idle_clears_the_session() -> None:
+    """Session means this burst of activity, not the lifetime of the process,
+    so once nothing is running there is no session to report."""
+    recorder = ActivityRecorder()
+    recorder.record(1, parsers.parse_stats({"bytes": 500, "speed": 100}))
+    assert recorder.session() == (500, 100)
+
+    recorder.forget(1)
+
+    assert recorder.session() == (0, 0.0)
+
+
+def test_one_run_finishing_does_not_clear_a_session_still_in_progress() -> None:
+    """Only the last one out turns the lights off. Otherwise a job finishing
+    would zero the totals of another still transferring."""
+    recorder = ActivityRecorder()
+    recorder.record(1, parsers.parse_stats({"bytes": 500, "speed": 100}))
+    recorder.record(2, parsers.parse_stats({"bytes": 300, "speed": 50}))
+
+    recorder.forget(1)
+
+    total, peak = recorder.session()
+    assert total == 800
+    assert peak == 150
+
+    recorder.forget(2)
+    assert recorder.session() == (0, 0.0)
+
+
+def test_the_session_can_also_be_reset_by_hand() -> None:
+    """For clearing the figures part way through a long run."""
+    recorder = ActivityRecorder()
+    recorder.record(1, parsers.parse_stats({"bytes": 500, "speed": 100}))
+
+    recorder.reset_session()
+
+    assert recorder.session() == (0, 0.0)
+    # And the run in flight keeps its baseline rather than counting its own
+    # earlier bytes again.
+    recorder.record(1, parsers.parse_stats({"bytes": 700, "speed": 100}))
+    assert recorder.session()[0] == 200
+
+
+def test_the_lifetime_total_is_untouched_by_going_idle(
+    authed_client: TestClient, settings: Settings
+) -> None:
+    """It answers "how much has this ever moved", and lives in the database."""
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="s", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="d", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(name="J", source_connection_id=source.id, dest_connection_id=dest.id, filters={})
+    session.add(job)
+    session.commit()
+    session.add(
+        JobRun(
+            job_id=job.id,
+            trigger=RunTrigger.manual,
+            mode=RunMode.live,
+            status=RunStatus.success,
+            bytes_transferred=8192,
+        )
+    )
+    session.commit()
+
+    from app.jobs.events import activity
+
+    activity.record(500, parsers.parse_stats({"bytes": 100, "speed": 10}))
+    activity.forget(500)
+
+    body = authed_client.get("/api/activity").json()
+    assert body["session_bytes"] == 0
+    assert body["lifetime_bytes"] == 8192
+
+
+def test_resetting_mid_run_counts_only_what_follows(authed_client: TestClient) -> None:
+    from app.jobs.events import activity
+
+    activity.record(99, parsers.parse_stats({"bytes": 1000, "speed": 10}))
+    try:
+        assert authed_client.post("/api/activity/reset-session").status_code == 204
+        # The run keeps its baseline, so its earlier bytes are not counted again.
+        activity.record(99, parsers.parse_stats({"bytes": 1500, "speed": 10}))
+        assert activity.session()[0] == 500
+    finally:
+        activity.forget(99)
+        activity.reset_session()
