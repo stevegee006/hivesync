@@ -8,6 +8,12 @@
 
 @source "../../templates";
 
+/* Templates already use x-cloak, but nothing defined it, so every panel Alpine
+   is about to hide was painted first and then removed. */
+[x-cloak] {
+  display: none !important;
+}
+
 @theme {
   /* Paths are shown in monospace throughout the UI, per SPEC section 13. */
   --font-mono: ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;

@@ -168,6 +168,7 @@ def build_bisync_command(
     resync: bool = False,
     dry_run: bool = False,
     unattended: bool = False,
+    archive: list[str] | None = None,
 ) -> list[str]:
     """The argv for a bidirectional run.
 
@@ -211,6 +212,7 @@ def build_bisync_command(
         # only sentinel of SPEC 6.4 cannot.
         args.append("--check-access")
 
+    args += list(archive or [])
     args += _comparison_args_for_bisync(job) + filter_args(job) + performance_args(job)
     return prepared.argv(*args)
 

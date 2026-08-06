@@ -137,3 +137,28 @@ def test_error_summary_is_capped() -> None:
 
 def test_error_summary_deduplicates() -> None:
     assert parsers.summarise_errors(["same", "same", "other"]) == ["same", "other"]
+
+
+# Captured from: rclone sync /tmp/s /tmp/d --backup-dir /tmp/arc --dry-run
+# --use-json-log -v. There is no "delete" line at all when archiving.
+ARCHIVE_DRY_RUN_SAMPLE = """
+{"time":"2026-08-05T23:05:21.463155Z","level":"notice","msg":"Skipped move into backup dir as --dry-run is set (size 4)","skipped":"move into backup dir","size":4,"object":"gone.txt","objectType":"*local.Object","source":"operations/operations.go:2629"}
+"""
+
+
+def test_an_archived_file_is_a_removal_not_a_delete() -> None:
+    """The whole reason parsers knows about archiving: a run with --backup-dir
+    reports "move into backup dir", so counting only "delete" reports an
+    archiving job as having done nothing to the file."""
+    log = parsers.parse_dry_run(ARCHIVE_DRY_RUN_SAMPLE)
+    assert [op.path for op in log.archived] == ["gone.txt"]
+    assert log.deletes == []
+    # It still left the destination, so it still counts against the brake.
+    assert [op.path for op in log.removals] == ["gone.txt"]
+    assert log.archived[0].size == 4
+
+
+def test_a_plain_delete_is_not_counted_as_archived() -> None:
+    log = parsers.parse_dry_run(DRY_RUN_SAMPLE)
+    assert log.archived == []
+    assert [op.path for op in log.removals] == ["deleted.txt"]

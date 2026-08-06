@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 #    "skipped":"copy","size":14,"object":"changed.txt","objectType":"*local.Object"}
 SKIPPED_COPY = "copy"
 SKIPPED_DELETE = "delete"
+# With --backup-dir there is no delete at all. Verified, rclone 1.74.4:
+#   {"level":"notice","msg":"Skipped move into backup dir as --dry-run is set
+#    (size 4)","skipped":"move into backup dir","object":"gone.txt"}
+# and live, an info line reading "Moved into backup dir". Counting only
+# "delete" would report every archived file as though nothing happened to it.
+SKIPPED_ARCHIVE = "move into backup dir"
 
 # `rclone check` exits non-zero when it finds differences. That is an ordinary
 # outcome for us, not a failure, so it needs distinguishing from a real error.
@@ -70,6 +76,20 @@ class DryRunLog:
     @property
     def deletes(self) -> list[PlannedOperation]:
         return [op for op in self.operations if op.operation == SKIPPED_DELETE]
+
+    @property
+    def archived(self) -> list[PlannedOperation]:
+        return [op for op in self.operations if op.operation == SKIPPED_ARCHIVE]
+
+    @property
+    def removals(self) -> list[PlannedOperation]:
+        """Everything that left the destination, however it left.
+
+        An archived file is still gone from the destination, so it counts against
+        the delete brake and belongs in the deleted total. Where it went is a
+        separate question, answered by `archived`.
+        """
+        return self.deletes + self.archived
 
 
 def iter_json_lines(text: str) -> Iterator[dict[str, object]]:

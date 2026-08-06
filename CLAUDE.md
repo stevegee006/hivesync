@@ -12,8 +12,8 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | M5 |
-| Milestones complete | M0, M1, M2, M3, M4 |
+| Milestone in progress | none, M7 not started |
+| Milestones complete | M0, M1, M2, M3, M4, M5, M6 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
@@ -181,7 +181,7 @@ Each of these is also explained in a comment at the site.
 Append findings here as they are discovered. Format: date, area, finding.
 
 - 2026-08-05, spec, SMB exposes no hash types, so `--checksum` is unavailable on any job with an SMB endpoint. Compare on mtime and size, and expose `--modify-window`.
-- 2026-08-05, spec, a `--backup-dir` inside the sync destination causes rclone to treat the archive as extra files on the destination and delete or re-archive them on subsequent runs. Archive must be a sibling, or an exclude filter must be injected.
+- 2026-08-05, spec, ~~a `--backup-dir` inside the sync destination causes rclone to treat the archive as extra files on the destination and delete or re-archive them on subsequent runs.~~ **Corrected at M6 against 1.74.4: that is not what happens.** rclone refuses the run outright with `Failed to sync: destination and parameter to --backup-dir mustn't overlap`. The conclusion stands for a different reason: the archive must be a sibling, or an exclude filter must be injected, because without one the job will not run at all.
 - 2026-08-05, spec, `rclone bisync` requires `--resync` on first run and a persistent `--workdir`. Losing the workdir forces another resync.
 - 2026-08-05, spec, Synology DSM creates `@eaDir` directories at every level and `#recycle` at share roots. Both must be excluded or they replicate to the other endpoint.
 - 2026-08-05, alembic, SQLite reports non-transactional DDL, so `context.begin_transaction()` is a no-op, and pysqlite does not emit `BEGIN` until the first DML statement. Without an explicit `connection.commit()` in `migrations/env.py`, `CREATE TABLE` statements persist through autocommit while the `INSERT` into `alembic_version` is rolled back at connection close. Symptom: a fully built schema that `alembic current` reports as being at base, and a downgrade that silently does nothing.
@@ -213,6 +213,12 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-05, docker, **a stage appended after `runtime` becomes the default build target**, so a plain `docker build .` silently produced an image whose entrypoint was pytest, and the container restart-looped running tests. The test image lives in `Dockerfile.test` for that reason, and compose pins `target: runtime` as well. Never append a stage after runtime.
 - 2026-08-05, ux, "these endpoints share no hash type" and "nobody has probed these endpoints" are different statements. Emitting the first when the second is true sends the reader off debugging the wrong problem. `capabilities.intersect` distinguishes them and so must anything else that reports on capabilities.
 - 2026-08-05, tooling, never pipe a build or test command into `tail` when the exit code matters: the pipeline returns tail's status and a failure reports as success. Redirect to a file and check `$?`, or use `PIPESTATUS`.
+- 2026-08-05, rclone, **an archiving run emits no `Deleted` line at all.** With `--backup-dir` the log carries `Moved (server-side)` then `Moved into backup dir` for the same object, and a dry run reports `"skipped":"move into backup dir"` rather than `"delete"`. Counting only `delete` reported every archived file as though nothing had happened to it: zero deleted, zero archived, and a run summary claiming it did nothing. `parsers.removals` is the count that means "left the destination"; use it anywhere a deletion total is wanted. Same lines for bisync.
+- 2026-08-05, rclone, **a `remote:` prefix does not make the path relative.** Every local endpoint is addressed as `alias:/absolute/path`, so rebuilding a sibling path after `strip("/")` produced `alias:tmp/...`, which rclone resolved against its own working directory. Archived files landed under the application's directory instead of beside the destination. Preserve the leading slash independently of the prefix.
+- 2026-08-05, ux, the operator types a path, never an rclone spec: they have no idea the run invents an `hs_dst:` alias. A typed archive path has to be qualified with the destination's remote before it is compared to anything, or "same connection" validation rejects the only thing a person could reasonably enter. `archive.qualify()` does this; a path that does name a remote keeps it, so naming the wrong one is still refused.
+- 2026-08-05, ux, a form control that is missing does not leave the field alone, it submits the schema default. The job editor carried no conflict-resolution control, so every web edit of a bidirectional job silently reset its policy to `newer`. When adding a field to a schema, add it to the form in the same change, or the form starts overwriting it. Covered now by `tests/test_job_form.py`.
+- 2026-08-05, ux, hidden form inputs still submit. Switching a job away from archiving kept sending the old archive path, which the schema then refused because an archive path is only valid with archiving on. The payload builder clears it rather than the template removing the input, so the value survives a mode toggle that ends up back on archive.
+- 2026-08-05, alpine, `x-cloak` does nothing without a `[x-cloak] { display: none }` rule, which nothing defined. Templates had used the attribute since M1, so every panel Alpine was about to hide was painted first and then removed. The rule is now in `tailwind.src.css`.
 
 ### M1 acceptance status, verified 2026-08-05
 
@@ -230,6 +236,48 @@ FTP and SMB fixtures, ruff and mypy clean.
 Remaining for M1: nothing blocking. The connection editor, credentials page,
 directory browser and compatibility page are built; the job editor that will
 consume the intersection logic belongs to a later milestone.
+
+### M6 deletion archiving, verified against rclone 1.74.4 and real SMB
+
+Where a deleted file goes lives in `app/jobs/archive.py`. Two decisions were made
+here rather than asked about, and both are load bearing.
+
+**A share root archives into a child, not a sibling.** SPEC 7.1's sibling rule is
+right for `remote:Share/media`, whose sibling is `remote:Share/media.hivesync-archive`.
+It is unusable for `remote:Share`, whose sibling is `remote:Share.hivesync-archive`,
+a *different share* that does not exist and that rclone cannot create. This is not
+a Synology quirk; no SMB server has a sibling of a share root. Verified against
+the fixture: rclone does not fail fast, it hangs retrying. A destination with no
+parent therefore archives into a child and the exclude is injected. An absolute
+path is exempt, because `/data` does have a creatable sibling.
+
+**Retention pruning is deferred to M7.** `archive_retention_days` is stored and
+ignored. Deleting from the archive is the one operation in this program with no
+undo behind it, and it belongs with the other scheduled maintenance work rather
+than bolted onto the run path. Nothing prunes today: say so in the UI before
+claiming otherwise.
+
+Acceptance criteria, all four met, `tests/test_archive_integration.py`:
+
+1. A deleted file lands in the archive with its relative path preserved, under
+   `<base>/<job-slug>/<run timestamp>/`.
+2. The archive is never itself synced or re-archived, asserted across three
+   consecutive runs for both a sibling archive and a child archive with the
+   injected exclude. The destination is byte-identical between runs two and three.
+3. lftp plus archiving is refused with a reason about the combination rather than
+   about lftp, because it stays impossible once the engine exists.
+4. The manual checklist, automated against the SMB fixture rather than a Synology:
+   create, update, delete into the archive, rename, and a unicode filename, then a
+   further run proving nothing is archived twice.
+
+**Criterion 4 does not cover a file larger than 5 GB.** The spec asks for one. It
+needs tens of gigabytes of disk and minutes of transfer per run, so it stays a
+manual check against real hardware. Nothing in this suite is evidence about
+multi-gigabyte files.
+
+Also true, and verified rather than assumed: archived deletions still count
+against `--max-delete`. With a brake of two and ten files to remove, rclone
+archived two and aborted. Archiving does not smuggle deletions past the brake.
 
 ### M5 bidirectional, verified against rclone 1.74.4
 

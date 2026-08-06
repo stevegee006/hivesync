@@ -111,12 +111,19 @@ def describe(job: Job) -> str:
         f"{reading.name}:{read_path or '/'} to {writing.name}:{write_path or '/'}."
     )
 
+    brake = f"up to a brake of {job.max_delete_pct}% of the destination."
     if job.delete_mode.value == "none":
         deletion = f" Files removed from {reading.name} are left alone on {writing.name}."
+    elif job.delete_mode.value == "archive":
+        # Archiving still counts against the brake: rclone applies --max-delete
+        # to files moved into the backup directory. Verified, not assumed.
+        deletion = (
+            f" Files removed from {reading.name} will be moved into the archive "
+            f"rather than deleted from {writing.name}, {brake}"
+        )
     else:
         deletion = (
-            f" Files removed from {reading.name} will be deleted from {writing.name}, "
-            f"up to a brake of {job.max_delete_pct}% of the destination."
+            f" Files removed from {reading.name} will be deleted from {writing.name}, {brake}"
         )
 
     back = f" Nothing will be written back to {reading.name}."

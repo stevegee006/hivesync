@@ -29,11 +29,13 @@ from app.api.jobs import describe
 from app.binaries import BinaryReport
 from app.crypto import SecretBox
 from app.db import get_session
-from app.engines import inspect
+from app.engines import inspect, rclone, rcloneconf
 from app.engines.rcloneconf import RemoteConfigError
-from app.jobs import cron, planner
+from app.jobs import archive, cron, planner
 from app.models import (
+    ArchiveLayout,
     CompareMode,
+    ConflictResolve,
     Connection,
     ConnectionType,
     Credential,
@@ -617,7 +619,30 @@ def _job_form_context(
         context["compat"] = capabilities.intersect(job.source_connection, job.dest_connection)
     elif len(connections) >= 2:
         context["compat"] = capabilities.intersect(connections[0], connections[1])
+
+    context["archive_preview"], context["archive_error"] = _archive_preview(job)
     return context
+
+
+def _archive_preview(job: Job | None) -> tuple[archive.ArchivePlan | None, str | None]:
+    """The resolved archive path, so it can be read before a run creates it.
+
+    "beside the destination" is not something an operator can check against their
+    own filesystem, and neither is the exclude this injects into their filters.
+    Both are shown. A configuration that cannot work says so here rather than at
+    two in the morning when the schedule fires.
+    """
+    if job is None or job.delete_mode != DeleteMode.archive:
+        return None, None
+    if not job.source_connection or not job.dest_connection:
+        return None, None
+    try:
+        # The written side, which for a dest_to_source job is the connection
+        # named source. Shown without the synthetic alias.
+        _source, dest, _read, write = rclone.endpoints_and_paths(job)
+        return archive.plan_for(job, rcloneconf.display_path(dest, write or None)), None
+    except (archive.ArchiveError, RemoteConfigError) as exc:
+        return None, str(exc)
 
 
 def _job_payload(form: dict[str, str], preset_ids: list[int]) -> JobCreate:
@@ -628,6 +653,13 @@ def _job_payload(form: dict[str, str], preset_ids: list[int]) -> JobCreate:
     excludes = [
         line.strip() for line in (form.get("filters_exclude") or "").splitlines() if line.strip()
     ]
+    delete_mode = DeleteMode(form.get("delete_mode") or "none")
+    # The archive inputs stay in the form when hidden, so a job switched away
+    # from archiving would otherwise submit a stale path and be refused for
+    # setting one it is no longer using.
+    archive_base = (form.get("archive_base") or "").strip() or None
+    if delete_mode != DeleteMode.archive:
+        archive_base = None
     return JobCreate(
         name=(form.get("name") or "").strip(),
         source_connection_id=int(form["source_connection_id"]),
@@ -637,7 +669,13 @@ def _job_payload(form: dict[str, str], preset_ids: list[int]) -> JobCreate:
         direction=Direction(form.get("direction") or "source_to_dest"),
         compare_mode=CompareMode(form.get("compare_mode") or "mtime_size"),
         modify_window=(form.get("modify_window") or "1s").strip(),
-        delete_mode=DeleteMode(form.get("delete_mode") or "none"),
+        delete_mode=delete_mode,
+        archive_base=archive_base,
+        archive_layout=ArchiveLayout(form.get("archive_layout") or "timestamped_dir"),
+        # These two were absent from the form until now, so every web edit of a
+        # bidirectional job silently reset its conflict policy to the default.
+        conflict_resolve=ConflictResolve(form.get("conflict_resolve") or "newer"),
+        check_access=form.get("check_access") == "true",
         max_delete_pct=number("max_delete_pct") or 0,
         transfers=number("transfers"),
         checkers=number("checkers"),

@@ -44,10 +44,12 @@ from app.engines.rclone import (
     side_for,
 )
 from app.engines.rcloneconf import ALIAS_DEST, ALIAS_SOURCE, RemoteConfigError
+from app.jobs import archive
 from app.jobs.events import RunEvent, broker
 from app.models import (
     ChangeAction,
     ConnectionType,
+    DeleteMode,
     Direction,
     Job,
     JobRun,
@@ -133,7 +135,7 @@ class LiveRunner:
             except BrakeEngaged as exc:
                 _fail(session, run, str(exc), status=RunStatus.failed)
                 _emit(run_id, "status", f"Refused: {exc}")
-            except (EngineError, RemoteConfigError) as exc:
+            except (EngineError, RemoteConfigError, archive.ArchiveError) as exc:
                 _fail(session, run, str(exc))
                 _emit(run_id, "status", f"Failed: {exc}")
         finally:
@@ -183,6 +185,13 @@ class LiveRunner:
             if not run.is_resync:
                 self._bisync_preflight(job, prepared, path1, path2, workdir)
 
+            archive_flags = []
+            if job.delete_mode == DeleteMode.archive:
+                # SPEC 7.2: each side archives locally. Never across remotes.
+                archive_flags = archive.bisync_args(
+                    archive.plan_for(job, path1), archive.plan_for(job, path2)
+                )
+
             argv = bisync.build_bisync_command(
                 job,
                 prepared,
@@ -191,6 +200,7 @@ class LiveRunner:
                 workdir=workdir,
                 resync=run.is_resync,
                 unattended=run.trigger == RunTrigger.schedule,
+                archive=archive_flags,
             )
             running = process.stream(
                 argv, env=prepared.env, redactor=prepared.redactor, log_label="bisync"
@@ -280,12 +290,26 @@ class LiveRunner:
         with rcloneconf.prepare(
             {ALIAS_SOURCE: source, ALIAS_DEST: dest}, box=self._box, settings=self._settings
         ) as prepared:
+            destination = prepared.endpoints[ALIAS_DEST].spec(write_path or None)
+            archive_flags: list[str] = []
+            if job.delete_mode == DeleteMode.archive:
+                # Resolved per run: the timestamped layout puts the run stamp in
+                # the path, so it cannot be computed once at save time.
+                plan_archive = archive.plan_for(job, destination)
+                archive_flags = archive.sync_args(plan_archive)
+                _emit(
+                    run.id,
+                    "status",
+                    f"Deletions will be archived to {plan_archive.backup_dir}.",
+                )
+
             argv = build_sync_command(
                 job,
                 prepared,
                 prepared.endpoints[ALIAS_SOURCE].spec(read_path or None),
-                prepared.endpoints[ALIAS_DEST].spec(write_path or None),
+                destination,
                 max_delete=threshold,
+                archive=archive_flags,
             )
             running = process.stream(
                 argv, env=prepared.env, redactor=prepared.redactor, log_label="sync"
@@ -377,6 +401,15 @@ def _absorb(observed: parsers.DryRunLog, line: str) -> None:
                     path=obj, operation=parsers.SKIPPED_DELETE, size=size_value
                 )
             )
+        elif message.startswith("Moved into backup dir"):
+            # An archiving run emits no "Deleted" line at all. It emits this,
+            # preceded by a "Moved (server-side)" line for the same object, so
+            # only this one is counted or the file would be counted twice.
+            observed.operations.append(
+                parsers.PlannedOperation(
+                    path=obj, operation=parsers.SKIPPED_ARCHIVE, size=size_value
+                )
+            )
 
     if payload.get("level") == "error":
         if "max-delete threshold reached" in message:
@@ -403,14 +436,21 @@ def _record(
     """
     side = side_for(job)
     copied = observed.copies
-    deleted = observed.deletes
+    archived = observed.archived
+    # An archived file left the destination just as surely as a deleted one, so
+    # it counts here. The plan calls it a deletion too: planning never passes
+    # --backup-dir, because where a file goes does not change whether it goes.
+    deleted = observed.removals
 
     planned_paths = {change.path for change in plan.changes}
+    actions = {
+        parsers.SKIPPED_DELETE: ChangeAction.deleted,
+        parsers.SKIPPED_ARCHIVE: ChangeAction.archived,
+    }
     for op in (copied + deleted)[:MAX_PERSISTED_CHANGES]:
-        action = (
-            ChangeAction.deleted
-            if op.operation == parsers.SKIPPED_DELETE
-            else (ChangeAction.new if op.path not in planned_paths else ChangeAction.updated)
+        action = actions.get(
+            op.operation,
+            ChangeAction.new if op.path not in planned_paths else ChangeAction.updated,
         )
         session.add(
             JobRunChange(run_id=run.id, action=action, side=side, path=op.path, size=op.size)
@@ -435,6 +475,7 @@ def _record(
     run.exit_code = exit_code
     run.files_transferred = len(copied)
     run.files_deleted = len(deleted)
+    run.files_archived = len(archived)
     run.bytes_transferred = sum(op.size or 0 for op in copied)
     run.errors_count = len(observed.errors)
     run.log_path = str(log_path)
@@ -444,6 +485,7 @@ def _record(
         "planned_deleted": plan.deleted_count,
         "transferred": len(copied),
         "deleted": len(deleted),
+        "archived": len(archived),
         "errors": parsers.summarise_errors(observed.errors),
         "warnings": plan.warnings,
         "dest_file_count": plan.dest_file_count,
@@ -453,11 +495,8 @@ def _record(
         "cancelled_partway": cancelled and bool(copied or deleted),
     }
     session.commit()
-    _emit(
-        run.id,
-        "done",
-        f"{status.value}: {len(copied)} transferred, {len(deleted)} deleted.",
-    )
+    removed = f"{len(archived)} archived" if archived else f"{len(deleted)} deleted"
+    _emit(run.id, "done", f"{status.value}: {len(copied)} transferred, {removed}.")
     logger.info(
         "Live run finished",
         extra={
@@ -512,8 +551,12 @@ def _record_bisync(
     run.status = status
     run.finished_at = utcnow()
     run.exit_code = exit_code
+    # bisync archives through the same machinery, emitting "Moved into backup
+    # dir" and no "Deleted" line, so removals rather than deletes.
+    removed = observed.removals
     run.files_transferred = len(observed.copies)
-    run.files_deleted = len(observed.deletes)
+    run.files_deleted = len(removed)
+    run.files_archived = len(observed.archived)
     run.bytes_transferred = sum(op.size or 0 for op in observed.copies)
     run.errors_count = len(observed.errors)
     run.log_path = str(log_path)
@@ -531,11 +574,12 @@ def _record_bisync(
             "deleted": deltas.path2_deleted,
         },
         "transferred": len(observed.copies),
-        "deleted": len(observed.deletes),
+        "deleted": len(removed),
+        "archived": len(observed.archived),
         "errors": parsers.summarise_errors(observed.errors),
         # A percentage for bisync, not a count. See app/engines/bisync.py.
         "max_delete_pct": job.max_delete_pct,
-        "cancelled_partway": cancelled and bool(observed.copies or observed.deletes),
+        "cancelled_partway": cancelled and bool(observed.copies or removed),
     }
     session.commit()
     _emit(run.id, "done", f"{status.value}: {deltas.total_changes} changes reconciled.")

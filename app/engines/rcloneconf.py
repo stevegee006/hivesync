@@ -166,6 +166,16 @@ def _base_path_for(connection: Connection) -> str:
     return base
 
 
+def display_path(connection: Connection, subpath: str | None = None) -> str:
+    """The endpoint path as an operator would recognise it.
+
+    Without the synthetic `hs_src:`/`hs_dst:` alias, which is an implementation
+    detail of a single run and means nothing to the person reading the screen.
+    Suitable for showing a resolved path, not for handing to rclone.
+    """
+    return join_subpath(_base_path_for(connection), subpath)
+
+
 def join_subpath(base: str, subpath: str | None) -> str:
     """Join a browse or job subpath onto a base path, refusing to escape it.
 

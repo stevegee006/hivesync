@@ -76,9 +76,9 @@
         </div>
       </div>
 
-      <div>
+      <div x-data="{ direction: '{{ job.direction.value if job else 'source_to_dest' }}' }">
         <label for="direction" class="block text-sm text-slate-400">Direction</label>
-        <select id="direction" name="direction"
+        <select id="direction" name="direction" x-model="direction"
                 class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
           <option value="source_to_dest" {% if job and job.direction.value == 'source_to_dest' %}selected{% endif %}>
             one way, source to destination
@@ -100,6 +100,40 @@
           handles deletions itself.
         </p>
         {% endif %}
+
+        <div x-show="direction === 'bidirectional'" x-cloak class="mt-4 space-y-4 rounded border border-slate-800 bg-slate-900/50 p-4">
+          <div>
+            <label for="conflict_resolve" class="block text-sm text-slate-400">When both sides changed</label>
+            <select id="conflict_resolve" name="conflict_resolve"
+                    class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+              {% for value, label in [
+                ('newer', 'keep the newer version'),
+                ('older', 'keep the older version'),
+                ('larger', 'keep the larger version'),
+                ('smaller', 'keep the smaller version'),
+                ('path1', 'always prefer the source'),
+                ('path2', 'always prefer the destination'),
+              ] %}
+              <option value="{{ value }}" {% if job and job.conflict_resolve.value == value %}selected{% endif %}>
+                {{ label }}
+              </option>
+              {% endfor %}
+            </select>
+            <p class="mt-1 text-xs text-slate-500">
+              The version that loses is kept under a conflict name either way.
+              Nothing is discarded.
+            </p>
+          </div>
+          <label class="flex items-start gap-2 text-xs text-slate-300">
+            <input type="checkbox" name="check_access" value="true" class="mt-0.5"
+                   {% if job and job.check_access %}checked{% endif %}>
+            <span>
+              Require a marker file on both sides before running. Catches an
+              endpoint that mounted empty, but only if you put the marker there
+              first, so it is off by default.
+            </span>
+          </label>
+        </div>
       </div>
     </div>
 
@@ -137,9 +171,9 @@
         </p>
       </div>
 
-      <div>
+      <div x-data="{ mode: '{{ job.delete_mode.value if job else 'none' }}' }">
         <label for="delete_mode" class="block text-sm text-slate-400">Extra files on the destination</label>
-        <select id="delete_mode" name="delete_mode"
+        <select id="delete_mode" name="delete_mode" x-model="mode"
                 class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
           <option value="none" {% if job and job.delete_mode.value == 'none' %}selected{% endif %}>
             leave them alone
@@ -147,8 +181,67 @@
           <option value="delete" {% if job and job.delete_mode.value == 'delete' %}selected{% endif %}>
             delete them
           </option>
-          <option value="archive" disabled>move them to an archive (not implemented yet)</option>
+          <option value="archive"
+                  {% if compat and not compat.archive.available %}disabled{% endif %}
+                  {% if job and job.delete_mode.value == 'archive' %}selected{% endif %}>
+            move them to an archive{% if compat and not compat.archive.available %} (unavailable){% endif %}
+          </option>
         </select>
+        {% if compat and not compat.archive.available %}
+        <p class="mt-1 text-xs text-amber-400">{{ compat.archive.reason }}</p>
+        {% elif compat and compat.archive.warning %}
+        <p class="mt-1 text-xs text-amber-400" x-show="mode === 'archive'">{{ compat.archive.warning }}</p>
+        {% endif %}
+
+        <div x-show="mode === 'archive'" x-cloak class="mt-4 space-y-4 rounded border border-slate-800 bg-slate-900/50 p-4">
+          <div>
+            <label for="archive_base" class="block text-sm text-slate-400">Archive location</label>
+            <input id="archive_base" name="archive_base"
+                   value="{{ job.archive_base or '' if job else '' }}"
+                   placeholder="{{ archive_preview.base if archive_preview else 'leave blank for the default' }}"
+                   class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+            {% if archive_preview %}
+              {# The resolved path, because "the default" is not something an
+                 operator can check against their own filesystem. #}
+              <p class="mt-1 text-xs text-slate-400">
+                Deletions go to
+                <span class="font-mono text-slate-300">{{ archive_preview.backup_dir }}</span>
+              </p>
+              {% if archive_preview.exclude %}
+              <p class="mt-1 text-xs text-amber-400">
+                The archive is inside the synced folder, so
+                <span class="font-mono">{{ archive_preview.exclude }}</span>
+                is added to this job's filters. Without it rclone refuses to run
+                at all, and the archive would be treated as extra files.
+              </p>
+              {% endif %}
+            {% elif archive_error %}
+              <p class="mt-1 text-xs text-rose-400">{{ archive_error }}</p>
+            {% else %}
+              <p class="mt-1 text-xs text-slate-500">
+                Blank puts the archive beside the destination folder. It must be
+                on the same connection and the same share, or moving a file into
+                it is a download and re-upload rather than a rename.
+              </p>
+            {% endif %}
+          </div>
+          <div>
+            <label for="archive_layout" class="block text-sm text-slate-400">Layout</label>
+            <select id="archive_layout" name="archive_layout"
+                    class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+              <option value="timestamped_dir" {% if job and job.archive_layout.value == 'timestamped_dir' %}selected{% endif %}>
+                a directory per run, keeping the original paths
+              </option>
+              <option value="suffix" {% if job and job.archive_layout.value == 'suffix' %}selected{% endif %}>
+                one flat directory, a timestamp added to each name
+              </option>
+            </select>
+            <p class="mt-1 text-xs text-slate-500">
+              Nothing prunes the archive yet, so it grows until you clear it out
+              yourself. Automatic retention is not built.
+            </p>
+          </div>
+        </div>
       </div>
 
       <div>
@@ -322,7 +415,7 @@
   {# Confirmation gated and names the job, per SPEC section 6.4. A live run
      plans first and refuses if the delete brake would be exceeded. #}
   <form method="post" action="/jobs/{{ job.id }}/run-live"
-        onsubmit="return confirm('Run {{ job.name }} for real? This will copy files{% if job.delete_mode.value != 'none' %} and delete files from {{ job.dest_connection.name }}{% endif %}. It plans first and refuses if more than {{ job.max_delete_pct }}% of the destination would be deleted.');">
+        onsubmit="return confirm('Run {{ job.name }} for real? This will copy files{% if job.delete_mode.value == 'archive' %} and move extra files on {{ job.dest_connection.name }} into the archive{% elif job.delete_mode.value == 'delete' %} and delete files from {{ job.dest_connection.name }}{% endif %}. It plans first and refuses if more than {{ job.max_delete_pct }}% of the destination would be deleted.');">
     <button type="submit"
             class="rounded border border-amber-700 px-3 py-1.5 text-sm text-amber-200 hover:border-amber-500">
       Run live

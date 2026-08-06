@@ -98,6 +98,7 @@ def build_sync_command(
     dst_spec: str,
     *,
     max_delete: int,
+    archive: list[str] | None = None,
 ) -> list[str]:
     """The argv for a live one way sync.
 
@@ -107,6 +108,9 @@ def build_sync_command(
     Deletion only happens at all when the job asks for it: without delete_mode
     the command is a copy, which never removes anything from the destination.
     """
+    # A copy cannot remove anything, so it is used whenever deletion is off.
+    # Archiving is still a sync: rclone moves the extra file aside rather than
+    # deleting it, which is a deletion from the destination's point of view.
     operation = "copy" if job.delete_mode == DeleteMode.none else "sync"
 
     return prepared.argv(
@@ -122,6 +126,7 @@ def build_sync_command(
         # file count, because rclone takes a count and no percentage flag exists.
         "--max-delete",
         str(max_delete),
+        *(archive or []),
         *comparison_args(job),
         *filter_args(job),
         *performance_args(job),
@@ -337,7 +342,10 @@ def _reconcile(
     unchanged = present on the source but not being copied
     """
     would_copy = {op.path: op for op in dry.copies}
-    would_delete = {op.path: op for op in dry.deletes}
+    # Planning never passes --backup-dir, since where a file goes does not change
+    # whether it goes. removals rather than deletes anyway, so that a plan built
+    # with one would still count what leaves the destination.
+    would_delete = {op.path: op for op in dry.removals}
 
     for path, op in sorted(would_copy.items()):
         is_new = path in presence.missing_on_dest

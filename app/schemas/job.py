@@ -92,6 +92,15 @@ class JobBase(BaseModel):
                 "setting must be 'leave them alone'. The delete brake still applies."
             )
 
+        if self.engine == Engine.lftp and self.delete_mode == DeleteMode.archive:
+            # SPEC 2.2 and 18: this combination is impossible even once lftp
+            # exists, so it gets its own reason rather than the generic one below.
+            raise ValueError(
+                "The lftp engine cannot archive deletions: it has no equivalent of "
+                "rclone's backup directory, so a deleted file would be gone rather "
+                "than moved aside. Use the rclone engine, or choose 'delete'."
+            )
+
         if self.engine == Engine.lftp:
             # SPEC 2.2. The engine does not exist yet, and its constraints differ.
             raise ValueError(
@@ -113,12 +122,6 @@ class JobBase(BaseModel):
                 validate(self.schedule_cron, self.timezone)
             except CronError as exc:
                 raise ValueError(str(exc)) from exc
-
-        if self.delete_mode == DeleteMode.archive:
-            raise ValueError(
-                "Deletion archiving is not implemented yet. Choose 'none' to leave "
-                "extra files alone, or 'delete' to remove them."
-            )
 
         return self
 
