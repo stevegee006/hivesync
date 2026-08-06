@@ -26,7 +26,7 @@ from jinja2 import pass_context
 from jinja2.runtime import Context
 from markupsafe import Markup
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -984,9 +984,25 @@ def run_detail_page(
         session.scalars(query.order_by(JobRunChange.action, JobRunChange.path).limit(1000))
     )
 
+    # Counted per action across the whole run, not the filtered view. The filter
+    # bar used to live inside `{% if changes %}`, so filtering to a category
+    # that happened to be empty hid the control that would get you back out of
+    # it. Showing the counts also means an empty category is visibly empty
+    # before it is clicked.
+    counts = {
+        str(name): total
+        for name, total in session.execute(
+            select(JobRunChange.action, func.count())
+            .where(JobRunChange.run_id == run_id)
+            .group_by(JobRunChange.action)
+        )
+    }
+
     context["run"] = run
     context["job"] = session.get(Job, run.job_id)
     context["changes"] = changes
+    context["change_counts"] = counts
+    context["total_changes"] = sum(counts.values())
     context["active_action"] = action or ""
     return templates.TemplateResponse(request, "runs/detail.html", context)
 

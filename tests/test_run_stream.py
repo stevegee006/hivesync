@@ -18,6 +18,7 @@ a few of those and the application stops responding altogether.
 
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 
@@ -278,3 +279,94 @@ def test_a_failed_plan_publishes_a_done_event(tmp_path: Path) -> None:
     assert any(event.kind == "done" for event in published)
     assert any("not mounted" in event.text for event in published)
     assert run.status == RunStatus.failed
+
+
+# --------------------------------------------------------------------------
+# The change filter on the run detail page
+# --------------------------------------------------------------------------
+
+
+def _run_with_changes(settings) -> int:
+    from app.models import ChangeAction, ChangeSide, JobRunChange
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="s", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="d", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(
+        name="Filtered", source_connection_id=source.id, dest_connection_id=dest.id, filters={}
+    )
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id,
+        trigger=RunTrigger.manual,
+        mode=RunMode.dry_run,
+        status=RunStatus.success,
+        summary={"new": 2, "updated": 0, "deleted": 0},
+    )
+    session.add(run)
+    session.commit()
+    for path in ("one.mkv", "two.mkv"):
+        session.add(
+            JobRunChange(
+                run_id=run.id,
+                action=ChangeAction.new,
+                side=ChangeSide.dest,
+                path=path,
+                size=10,
+            )
+        )
+    session.commit()
+    return run.id
+
+
+def test_the_filter_bar_survives_an_empty_category(authed_client: TestClient, settings) -> None:
+    """It used to live inside the check on the filtered list, so filtering to a
+    category that happened to be empty hid the only way back to "all"."""
+    run_id = _run_with_changes(settings)
+
+    page = authed_client.get(f"/runs/{run_id}?action=deleted").text
+
+    assert "Show" in page
+    assert f'href="/runs/{run_id}"' in page
+    assert "show all" in page
+
+
+def test_an_empty_category_does_not_claim_the_run_did_nothing(
+    authed_client: TestClient, settings
+) -> None:
+    run_id = _run_with_changes(settings)
+
+    page = authed_client.get(f"/runs/{run_id}?action=deleted").text
+
+    assert "Nothing in this category" in page
+    assert "recorded\n  2 changes in total" in page.replace("\r\n", "\n")
+    assert "Nothing would change." not in page
+
+
+def test_a_run_that_really_changed_nothing_still_says_so(
+    authed_client: TestClient, settings
+) -> None:
+    run_id = _finished_run(settings)
+
+    page = authed_client.get(f"/runs/{run_id}").text
+
+    assert "Nothing would change." in page
+    # And no filter bar, since there is nothing to filter.
+    assert "Show" not in page
+
+
+def test_the_filter_chips_carry_their_counts(authed_client: TestClient, settings) -> None:
+    """An empty category is then visibly empty before it is clicked."""
+    run_id = _run_with_changes(settings)
+
+    page = authed_client.get(f"/runs/{run_id}").text
+
+    flat = re.sub(r"\s+", " ", page)
+
+    # The two new files are counted against the "new" chip.
+    assert re.search(r"action=new[^>]*>\s*new <span[^>]*>2</span>", flat), flat
+    # A category with nothing in it says zero rather than vanishing.
+    assert re.search(r"action=deleted[^>]*>\s*deleted <span[^>]*>0</span>", flat), flat
