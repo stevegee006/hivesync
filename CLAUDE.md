@@ -12,17 +12,23 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | none, M8 not started |
-| Milestones complete | M0, M1, M2, M3, M4, M5, M6, M7 |
+| Milestone in progress | none. Every milestone in SPEC section 18 is done |
+| Milestones complete | M0 through M8 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
-| Observed lftp version | 4.9.2 (Debian trixie, verified in the built image 2026-08-05) |
+| Observed lftp version | 4.9.2, now reproducible: the base image is pinned by digest, which pins the apt snapshot |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
 | Capability probe method | `rclone backend features <remote>:`, verified present in 1.74.4 with a stable JSON shape. No fallback needed |
 
-The lftp row says "observed" rather than "pinned" on purpose. Debian trixie ships
-one lftp and only security patches it, so an exact apt version pin turns every
-future point release into a build failure for no safety gain. The base image gets
-pinned by digest at M8, which pins the apt snapshot properly.
+The lftp row still says "observed" rather than apt-pinned, on purpose: Debian
+trixie ships one lftp and only security patches it, so an exact apt pin would turn
+every future point release into a build failure for no safety gain. **As of M8 the
+base image is pinned by digest**, so the apt snapshot behind that observation is
+fixed and the same build produces the same lftp.
+
+Python dependencies are installed from `requirements.lock` with `--require-hashes`.
+`requirements.txt` remains the hand-edited list; regenerate the lock with
+`make lock-deps` after any change, or the build fails rather than installing
+something unverified.
 
 ### M0 verification status: acceptance criteria met
 
@@ -86,6 +92,8 @@ needs `docker login` and a manual QEMU binfmt registration, so prefer the tag.
 - `bisync` never auto-resyncs. Resync is always an explicit, confirmed user action.
 - A stale or empty-looking source cannot cause a mass delete on the destination.
 - Only one run per job at a time.
+- Every state-changing request carries a CSRF token, or is authenticated by a bearer token that a browser cannot be made to send.
+- A login failure, an unknown username and a locked account are indistinguishable to the caller.
 
 ## Commands
 
@@ -112,6 +120,9 @@ app/
   binaries.py        rclone and lftp version discovery for /api/health
   security.py        argon2id, sessions, bootstrap admin
   crypto.py          the ONLY module that touches secrets
+  csrf.py            token minting and the middleware that enforces it
+  ratelimit.py       login attempt counting, per username and per address
+  headers.py         CSP and the other response headers
   notify.py          webhook and ntfy delivery, never raises into a run
   metrics.py         Prometheus text, rendered from the run history
   portable.py        config export and import, never any credential material
@@ -184,8 +195,9 @@ Each of these is also explained in a comment at the site.
    in a log line. The message includes a suggestion to copy.
 8. A secret key fingerprint is stored in `setting` at first boot, so a swapped key
    is reported at startup rather than as an opaque decrypt failure mid-run.
-9. `HIVESYNC_AUTH_MODE=trusted_header` refuses to start until M8. A half
-   implemented proxy trust check is an authentication bypass.
+9. `HIVESYNC_AUTH_MODE=trusted_header` refused to start from M0 to M7. A half
+   implemented proxy trust check is an authentication bypass. **Implemented at
+   M8**, with the peer-address allowlist and no auto-provisioning.
 10. Section 14 says "official release tarball". rclone publishes zip archives.
 
 ## Gotchas log
@@ -238,6 +250,12 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-06, testing, the SMB fixture is a **persistent volume**, shared across tests and across runs until `docker compose down -v`. A test asserting "two files are new" fails on the second run for reasons that look like a product bug. Give each run a unique destination subpath rather than trusting the fixture to be empty.
 - 2026-08-06, ux, a field with no control on the form submits the schema default on every save. This has now happened three times: `conflict_resolve`, `notify_on`, and the archive fields. `tests/test_job_form.py` covers each. When adding a column, add the control in the same change.
 
+- 2026-08-06, starlette, **middleware that reads the request body breaks the route underneath it.** `await request.form()` caches on that Request instance only, and the route constructs its own, so it reads from an already-consumed stream. Buffer the raw bytes and pass a replay `receive` that returns the same body to every reader. `Result`-style laziness is not the issue; instance-scoped caching is.
+- 2026-08-06, httpx, **per-request `headers=` merges with the client's headers rather than replacing them.** A test that "removes" a header by passing a filtered dict still sends it, so a CSRF test can pass while proving nothing. Pop it off the client for the duration instead.
+- 2026-08-06, starlette, `TestClient(app)` entered twice on the same app starts the scheduler twice and raises `SchedulerAlreadyRunningError`. To exercise two independent sessions, build a second application over its own database.
+- 2026-08-06, fastapi, middleware is applied outermost-last, so `SessionMiddleware` must be added *after* the CSRF middleware for the CSRF check to see a decoded session. Getting it backwards means the token is never found and every form breaks.
+- 2026-08-06, docker, `ARG` used in a `FROM` line has to be declared **before the first FROM**, and is then out of scope inside every stage. Digest pinning needs the ARG at the top of the file and a redeclaration inside any stage that also wants the value.
+
 ### M1 acceptance status, verified 2026-08-05
 
 All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,
@@ -254,6 +272,78 @@ FTP and SMB fixtures, ruff and mypy clean.
 Remaining for M1: nothing blocking. The connection editor, credentials page,
 directory browser and compatibility page are built; the job editor that will
 consume the intersection logic belongs to a later milestone.
+
+### M8 hardening, verified 2026-08-06
+
+414 unit tests, 65 integration tests, and the integration suite now runs from
+compose rather than a hand-assembled `docker run`.
+
+**Host key pinning was already done.** SPEC 18 lists it under M8; it landed in M1
+with trust on first use, per-connection pinning and a run that fails when a key
+changes. M8 verified it rather than rebuilding it.
+
+**CSRF is middleware, not a decorator.** Twenty-three POST forms and seventeen
+API routes, all authenticated by the same cookie. A per-route decorator fails by
+omission, and the omission is silent; middleware fails by refusing, which is
+loud. `test_csrf.py` walks every page, finds every POST form and fails if one has
+no token, which is what will catch the form someone adds next year.
+
+**Login is not exempt from CSRF.** Without a token there, an attacker logs a
+victim into an attacker-controlled account and collects whatever they do in it.
+The login page mints a token before there is a user to attach it to, and the
+token is rotated on login and logout so one fixed beforehand does not survive the
+privilege change.
+
+**The middleware only reads the body when it has to.** A header token is checked
+first, so JSON and HTMX requests are never buffered. A form body is buffered,
+bounded, and **replayed** to the route underneath: Starlette's form cache belongs
+to one Request instance and the route builds its own, so without the replay a
+multipart upload would arrive empty. That case is tested, because it would look
+like a bad file rather than a bug here.
+
+**`HIVESYNC_API_TOKEN` is exempt, and that is not a hole.** A browser never
+attaches a bearer token on its own, so there is nothing for a cross-site page to
+forge. Without it, CSRF would make the JSON API browser-only.
+
+**Rate limiting is in the database, and it never says so.** Per username and per
+source address, whichever trips first. In memory it would not survive a restart,
+and provoking a container restart is not hard. The response for a wrong password,
+an unknown username and a locked account is identical: a limiter that announces
+the lockout is a username oracle, which undoes the equal-time password comparison
+the login path already does. The window slides from the oldest failure in it, so
+someone still retrying does not extend their own lockout indefinitely.
+
+**`trusted_header` trusts the socket peer, never a header.** `X-Forwarded-For` is
+set by the client on a direct connection, so honouring it would let anyone claim
+to have arrived through the proxy. And the asserted username maps to an existing
+account: it never creates one, because a header that provisions an admin is a
+registration form with no password on it.
+
+**Version disclosure was split off `/api/health`.** This is a deliberate change to
+something M0 asserted. Liveness stays unauthenticated for the container
+HEALTHCHECK; binary versions moved to `/api/health/detail`. CI still asserts M0's
+criterion, signing in with the API token first, and also asserts that the open
+endpoint discloses nothing and that a form post with no token is refused.
+
+Acceptance criteria, all six met:
+
+1. A form POST without a valid token is refused, with one succeeds, and a token
+   from another session is refused, across web forms, HTMX and the JSON API.
+2. Repeated failures lock out, survive a restart, refuse a correct password while
+   locked, and are indistinguishable from any other failure.
+3. `trusted_header` honours an allowlisted peer, ignores everything else, and
+   never creates a user.
+4. Unauthenticated `/api/health` returns no versions; the detail endpoint does,
+   with a session or the API token.
+5. The redaction sweep finds no sentinel in any log, database column, `/config`
+   file, export document, notification detail or metrics response.
+6. The image builds from digest-pinned bases with hash-pinned dependencies, and
+   the full integration suite runs from compose.
+
+Response headers were added beyond SPEC 15: `frame-ancestors 'none'`, nosniff,
+`Referrer-Policy: same-origin` and a CSP allowing only this origin. A framed page
+clicked through is a genuine click, so no CSRF token protects against it, and
+this UI has a Run button that deletes files.
 
 ### M7 polish, verified 2026-08-06
 
@@ -568,12 +658,14 @@ Raised at M0, resolved at the milestone named. Do not rediscover these.
    using dry run, which is the feature keeping them safe. Consider deriving phase 1
    from phase 2's JSON. Section 8's "estimated duration" card also has no stated
    basis; it needs last-run throughput or should be dropped.
-7. **Unauthenticated `/api/health` discloses binary versions. M8.** Kept for now
-   because M0's acceptance criterion requires it. Split bare liveness from version
-   detail. **`/metrics` was resolved at M7**: it requires a session or
-   `HIVESYNC_METRICS_TOKEN`, because its labels carry job and share names.
-8. **CSRF, login rate limiting, host key pinning. M8.** Until then the app is not
-   safe to expose beyond a trusted network, which the README states.
+7. ~~**Unauthenticated `/api/health` discloses binary versions.**~~ **Resolved at
+   M8.** Liveness stays open for the HEALTHCHECK; versions moved to
+   `/api/health/detail` behind authentication, and CI signs in to assert M0's
+   criterion. `/metrics` was resolved at M7 the same way.
+8. ~~**CSRF, login rate limiting, host key pinning.**~~ **Resolved at M8**, and
+   host key pinning had already landed at M1. The README now states what is in
+   place and what is still absent (one admin role, no audit log, no third-party
+   review) rather than a blanket warning.
 
 ## Style
 

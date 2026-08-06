@@ -19,6 +19,7 @@ from tests.conftest import (
     TEST_ADMIN_USERNAME,
     create_schema,
     make_settings,
+    refresh_csrf,
 )
 
 # A browser submitting a form always sends this content type, even when the form
@@ -86,6 +87,7 @@ def test_password_change_then_dashboard(client: TestClient) -> None:
         data={"username": TEST_ADMIN_USERNAME, "password": TEST_ADMIN_PASSWORD},
         follow_redirects=False,
     )
+    refresh_csrf(client)
     response = client.post(
         "/api/auth/change-password",
         data={"current_password": TEST_ADMIN_PASSWORD, "new_password": NEW_PASSWORD},
@@ -101,6 +103,7 @@ def test_password_change_then_dashboard(client: TestClient) -> None:
 
 def test_new_password_works_and_old_one_does_not(authed_client: TestClient) -> None:
     authed_client.post("/api/auth/logout", **BROWSER_POST, follow_redirects=False)
+    refresh_csrf(authed_client)
 
     rejected = authed_client.post(
         "/api/auth/login",
@@ -134,6 +137,7 @@ def test_password_change_rejections(client: TestClient, payload: dict[str, str],
         data={"username": TEST_ADMIN_USERNAME, "password": TEST_ADMIN_PASSWORD},
         follow_redirects=False,
     )
+    refresh_csrf(client)
     response = client.post("/api/auth/change-password", data=payload, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == f"/account/password?error={code}"
@@ -265,11 +269,9 @@ def test_auth_mode_none_grants_access(tmp_path: Path, monkeypatch: pytest.Monkey
         assert client.get("/", follow_redirects=False).status_code == 303  # forced password change
 
 
-def test_trusted_header_mode_refuses_to_start(tmp_path: Path) -> None:
-    """Half implemented proxy trust is an authentication bypass, so it is refused
-    with an explanation until the hardening milestone builds it properly."""
-    from app.main import StartupError
-
+def test_trusted_header_mode_starts_now_that_it_is_implemented(tmp_path: Path) -> None:
+    """Refused to start from M0 to M7 rather than being half built. M8 builds it,
+    and the proxy allowlist is what makes it safe: see test_trusted_header.py."""
     settings: Settings = make_settings(
         tmp_path,
         auth_mode="trusted_header",
@@ -277,9 +279,8 @@ def test_trusted_header_mode_refuses_to_start(tmp_path: Path) -> None:
         trusted_proxies="10.0.0.0/8",
     )
     create_schema(settings)
-    with pytest.raises(StartupError) as excinfo:
-        create_app(settings)
-    assert "not implemented yet" in str(excinfo.value)
+    app = create_app(settings)
+    assert app.state.settings.auth_mode == "trusted_header"
 
 
 def test_trusted_header_mode_requires_a_proxy_allowlist(tmp_path: Path) -> None:

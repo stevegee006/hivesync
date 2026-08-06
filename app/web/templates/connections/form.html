@@ -19,6 +19,7 @@
       class="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2"
       x-data="{ type: '{{ (connection.type.value if connection else 'sftp') }}',
                 mode: '{{ (connection.rclone_mode.value if connection and connection.rclone_mode else 'inline') }}' }">
+  {{ csrf_input() }}
 
   <div class="space-y-4">
     <div>

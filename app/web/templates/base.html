@@ -11,7 +11,11 @@
   <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
-<body class="h-full bg-slate-950 text-slate-200 antialiased">
+{# hx-headers is inherited by every htmx request on the page, so a partial post
+   carries the token without each hx-post repeating it. htmx sends no form body
+   for a bare hx-post, which is why the header exists at all. #}
+<body class="h-full bg-slate-950 text-slate-200 antialiased"
+      hx-headers='{"X-CSRF-Token": "{{ csrf_token() }}"}'>
   {% if auth_mode == 'none' %}
   <div class="bg-amber-900/60 border-b border-amber-700 px-4 py-2 text-sm text-amber-100">
     Authentication is disabled. Every visitor has full control of every job,
@@ -45,6 +49,7 @@
         <span class="font-mono text-xs text-slate-500">{{ user.username }}</span>
         <a href="/account/password" class="hover:text-slate-200">Password</a>
         <form method="post" action="/api/auth/logout">
+          {{ csrf_input() }}
           <button type="submit" class="hover:text-slate-200">Sign out</button>
         </form>
         {% endif %}

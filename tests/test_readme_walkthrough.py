@@ -29,6 +29,7 @@ from tests.conftest import (
     TEST_ADMIN_USERNAME,
     create_schema,
     make_settings,
+    refresh_csrf,
 )
 
 pytestmark = pytest.mark.integration
@@ -50,13 +51,19 @@ def settings(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def ui(settings: Settings):
-    """A signed-in browser session, past the forced password change."""
+    """A signed-in browser session, past the forced password change.
+
+    Carries a CSRF token the way a browser does, by reading it off a rendered
+    page, and picks up the new one after login, where it is rotated.
+    """
     with TestClient(create_app(settings)) as client:
+        refresh_csrf(client)
         client.post(
             "/api/auth/login",
             data={"username": TEST_ADMIN_USERNAME, "password": TEST_ADMIN_PASSWORD},
             follow_redirects=False,
         )
+        refresh_csrf(client)
         client.post(
             "/api/auth/change-password",
             data={"current_password": TEST_ADMIN_PASSWORD, "new_password": NEW_PASSWORD},

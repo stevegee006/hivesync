@@ -24,6 +24,8 @@ PLATFORMS ?= linux/amd64,linux/arm64
 DEV_ENV := HIVESYNC_CONFIG_DIR=./config
 
 BUILD_ARGS := \
+	--build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) \
+	--build-arg DEBIAN_IMAGE=$(DEBIAN_IMAGE) \
 	--build-arg RCLONE_VERSION=$(RCLONE_VERSION) \
 	--build-arg RCLONE_SHA256_AMD64=$(RCLONE_SHA256_AMD64) \
 	--build-arg RCLONE_SHA256_ARM64=$(RCLONE_SHA256_ARM64) \
@@ -62,16 +64,14 @@ test:
 	$(PYTHON) -m pytest -m "not integration"
 
 # Runs inside the image, on the fixture network, so the tests use the pinned
-# rclone rather than whatever is on the host PATH. The host does not need rclone
-# or even Python for this target.
+# rclone rather than whatever is on the host PATH.
+#
+# The runner is a compose service now, rather than a `docker run` that had to
+# know the network name compose generates. SPEC section 18, M8.
 .PHONY: test-integration
-test-integration: test-image
-	docker compose -f docker-compose.test.yml up -d
-	docker run --rm \
-		--network hivesync-test_default \
-		-v "$(CURDIR)":/src -w /src \
-		-e HIVESYNC_SECRET_KEY=$$($(PYTHON) -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())" 2>/dev/null || echo "") \
-		$(IMAGE_NAME):test pytest -m integration -q; \
+test-integration:
+	HIVESYNC_TEST_SECRET_KEY=$$($(PYTHON) -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())") \
+		docker compose -f docker-compose.test.yml run --rm --build tests; \
 		status=$$?; \
 		docker compose -f docker-compose.test.yml down -v; \
 		exit $$status
@@ -142,6 +142,15 @@ pin-versions:
 .PHONY: pin-deps
 pin-deps:
 	@docker run --rm --entrypoint sh $(LOCAL_IMAGE) -c 'pip freeze'
+
+# Regenerate requirements.lock from requirements.txt, with a hash for every
+# distribution. The image installs from the lock with --require-hashes, so this
+# must be re-run after any dependency change or the build fails.
+.PHONY: lock-deps
+lock-deps:
+	docker run --rm -v "$(CURDIR)":/src -w /src $(PYTHON_IMAGE) sh -c \
+		"pip install -q pip-tools && pip-compile --generate-hashes \
+		 --output-file=requirements.lock --quiet requirements.txt"
 
 .PHONY: migration
 migration: guard-NAME

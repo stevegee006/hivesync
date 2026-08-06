@@ -46,6 +46,7 @@
       <span class="text-slate-600">never run</span>
       {% endif %}
       <form method="post" action="/jobs/{{ job.id }}/run">
+        {{ csrf_input() }}
         <button type="submit" class="text-slate-400 hover:text-slate-100">Dry run</button>
       </form>
     </div>

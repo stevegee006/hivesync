@@ -213,3 +213,93 @@ def test_connection_read_never_exposes_credential_material(
     assert SENTINEL_PASSWORD not in response.text
     # It may reference the credential by id, which is not secret.
     assert "credential_id" in response.text
+
+
+# --------------------------------------------------------------------------
+# M7 surfaces, swept at M8
+# --------------------------------------------------------------------------
+
+SENTINEL_WEBHOOK_TOKEN = "ZZ-sentinel-webhook-token-must-never-appear-45"
+
+
+def test_the_config_export_carries_no_sentinel(authed_client: TestClient) -> None:
+    """The export is a file people put in a git repository or paste into a
+    support thread, which is why it excludes ciphertext as well as plaintext."""
+    _create_credentials(authed_client)
+    authed_client.patch(
+        "/api/settings",
+        json={
+            "notify_target": "webhook",
+            "notify_webhook_url": f"https://example.invalid/hook/{SENTINEL_WEBHOOK_TOKEN}",
+        },
+    )
+
+    body = authed_client.get("/settings/export").text
+
+    for sentinel in (
+        SENTINEL_PASSWORD,
+        SENTINEL_PEM,
+        SENTINEL_PASSPHRASE,
+        SENTINEL_WEBHOOK_TOKEN,
+    ):
+        assert sentinel not in body
+
+
+def test_the_settings_page_never_renders_the_webhook_token(authed_client: TestClient) -> None:
+    authed_client.patch(
+        "/api/settings",
+        json={
+            "notify_target": "webhook",
+            "notify_webhook_url": f"https://example.invalid/hook/{SENTINEL_WEBHOOK_TOKEN}",
+        },
+    )
+    assert SENTINEL_WEBHOOK_TOKEN not in authed_client.get("/settings").text
+    assert SENTINEL_WEBHOOK_TOKEN not in authed_client.get("/api/settings").text
+
+
+def test_a_failed_notification_does_not_log_the_url(
+    authed_client: TestClient, caplog: object
+) -> None:
+    """The failure message reaches an operator, and a URL that carries a token in
+    its path must not travel with it."""
+    import logging as _logging
+
+    authed_client.patch(
+        "/api/settings",
+        json={
+            "notify_target": "webhook",
+            # Port 9 discards, so this fails without waiting on a real endpoint.
+            "notify_webhook_url": f"http://127.0.0.1:9/hook/{SENTINEL_WEBHOOK_TOKEN}",
+            "notify_timeout_seconds": 1,
+        },
+    )
+
+    with caplog.at_level(_logging.DEBUG):  # type: ignore[attr-defined]
+        result = authed_client.post("/api/settings/test-notification").json()
+
+    assert result["ok"] is False
+    assert SENTINEL_WEBHOOK_TOKEN not in result["detail"]
+    for record in caplog.records:  # type: ignore[attr-defined]
+        assert SENTINEL_WEBHOOK_TOKEN not in record.getMessage()
+        assert SENTINEL_WEBHOOK_TOKEN not in str(record.__dict__)
+
+
+def test_metrics_carries_no_sentinel(authed_client: TestClient) -> None:
+    """Job names reach the metric labels, so a job named after a secret would
+    export it. Nothing else should get there at all."""
+    _create_credentials(authed_client)
+    assert SENTINEL_PASSWORD not in authed_client.get("/metrics").text
+
+
+def test_the_api_token_is_never_echoed(tmp_path: Path) -> None:
+    """It authenticates every request that carries it, so it must not appear in
+    any response, including the settings screen that mentions the metrics one."""
+    from app.main import create_app
+
+    sentinel = "ZZ-sentinel-api-token-must-never-appear-46"
+    settings = make_settings(tmp_path, api_token=sentinel, metrics_token=sentinel)
+    create_schema(settings)
+    with TestClient(create_app(settings)) as client:
+        headers = {"Authorization": f"Bearer {sentinel}"}
+        for path in ("/settings", "/api/settings", "/api/health", "/metrics"):
+            assert sentinel not in client.get(path, headers=headers).text

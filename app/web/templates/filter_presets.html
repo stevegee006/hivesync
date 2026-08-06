@@ -45,6 +45,7 @@
 
     <div x-show="open" x-cloak class="mt-3 border-t border-slate-800 pt-3">
       <form method="post" action="/filter-presets" class="space-y-3">
+        {{ csrf_input() }}
         <input type="hidden" name="preset_id" value="{{ preset.id }}">
         <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <div>
@@ -91,6 +92,7 @@
       {% if not preset.builtin %}
       <form method="post" action="/filter-presets/{{ preset.id }}/delete" class="mt-2"
             onsubmit="return confirm('Delete {{ preset.name }}?');">
+        {{ csrf_input() }}
         <button type="submit" class="text-xs text-red-400 hover:text-red-300">Delete preset</button>
       </form>
       {% endif %}
@@ -102,6 +104,7 @@
 <section class="mt-8 border-t border-slate-800 pt-6">
   <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">New preset</h2>
   <form method="post" action="/filter-presets" class="mt-3 space-y-3">
+    {{ csrf_input() }}
     <div>
       <label class="block text-xs text-slate-400" for="new-name">Name</label>
       <input id="new-name" name="name" required

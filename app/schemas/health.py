@@ -27,9 +27,16 @@ class RcloneHealth(BinaryHealth):
     matches_expected: bool | None = None
 
 
-class HealthResponse(BaseModel):
+class LivenessResponse(BaseModel):
+    """The unauthenticated answer. No binary versions: see app/api/health.py."""
+
     status: HealthStatus
     app_version: str
     database: DatabaseHealth
+
+
+class HealthResponse(LivenessResponse):
+    """The authenticated answer, with the version detail."""
+
     rclone: RcloneHealth
     lftp: BinaryHealth

@@ -10,6 +10,7 @@ by the entrypoint running `alembic upgrade head` first.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -74,6 +75,25 @@ def app(settings: Settings) -> FastAPI:
     return create_app(settings)
 
 
+_TOKEN = re.compile(r'name="csrf_token" value="([^"]+)"')
+
+
+def refresh_csrf(client: TestClient) -> str:
+    """Pick up the session's CSRF token and send it on every later request.
+
+    A browser gets the token by rendering a page, so a test client does the same
+    rather than reaching into the session. Called again after login, because the
+    token is rotated there: one minted before authentication must not stay valid
+    afterwards.
+    """
+    for path in ("/", "/login"):
+        match = _TOKEN.search(client.get(path).text)
+        if match:
+            client.headers["X-CSRF-Token"] = match.group(1)
+            return match.group(1)
+    raise AssertionError("no CSRF token was rendered on any page")
+
+
 @pytest.fixture
 def fake_binaries() -> BinaryReport:
     """A healthy binary report.
@@ -95,6 +115,7 @@ def client(app: FastAPI, fake_binaries: BinaryReport) -> Iterator[TestClient]:
         # Set after lifespan, which probes the real binaries and would otherwise
         # overwrite this.
         app.state.binaries = fake_binaries
+        refresh_csrf(test_client)
         yield test_client
 
 
@@ -107,6 +128,8 @@ def authed_client(client: TestClient) -> TestClient:
         follow_redirects=False,
     )
     assert response.status_code == 303
+    # Login rotates the token, so the stale one would be refused from here on.
+    refresh_csrf(client)
     response = client.post(
         "/api/auth/change-password",
         data={"current_password": TEST_ADMIN_PASSWORD, "new_password": NEW_PASSWORD},

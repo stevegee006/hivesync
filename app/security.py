@@ -1,18 +1,29 @@
-"""Authentication: argon2id password hashing and session handling.
+"""Authentication: argon2id password hashing, sessions, and proxy trust.
 
-Scope at M0 is auth_mode "local" and "none". "trusted_header" is refused at
-startup with an explanation rather than half implemented, because getting proxy
-trust wrong is an authentication bypass. It lands in M8 alongside CSRF tokens,
-login rate limiting and host key pinning, which is where SPEC section 18 puts the
-hardening work.
+Three modes, per SPEC section 14:
 
-There is no CSRF protection yet. SPEC section 18 assigns it to M8. Until then the
-app is not safe to expose beyond a trusted network, which the README states.
+- `local`, a username and password against the user table.
+- `none`, every request acts as the single admin. For deployments where a proxy
+  authenticates already. Warned about at startup and banner-flagged in the UI.
+- `trusted_header`, an identity asserted by a reverse proxy. Implemented at M8,
+  having refused to start since M0, because a half-checked proxy trust is an
+  authentication bypass rather than a missing feature.
+
+**Two rules make `trusted_header` safe, and both matter.** The header is honoured
+only when the *socket peer* is inside `HIVESYNC_TRUSTED_PROXIES`, never when a
+request merely claims to have come through one. And the header maps to an
+existing user: it never creates one. A header that provisions an admin account
+is not authentication, it is a registration form with no password.
+
+CSRF lives in app/csrf.py, and API bearer tokens are checked here so that one
+module answers "who is this request".
 """
 
 from __future__ import annotations
 
 import contextlib
+import hmac
+import ipaddress
 import logging
 import secrets
 
@@ -108,6 +119,70 @@ def _bootstrap_admin_user(session: Session) -> User | None:
     return session.scalar(select(User).order_by(User.id).limit(1))
 
 
+def peer_is_trusted_proxy(request: Request, settings: Settings) -> bool:
+    """Whether the socket peer is inside the configured proxy allowlist.
+
+    The peer address, not X-Forwarded-For. On a direct connection the client sets
+    that header itself, so trusting it would let anyone claim to be the proxy.
+    """
+    peer = request.client.host if request.client else None
+    if not peer:
+        return False
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for entry in settings.trusted_proxy_list:
+        try:
+            if address in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            logger.error(
+                "Ignoring an unparseable entry in HIVESYNC_TRUSTED_PROXIES",
+                extra={"entry": entry},
+            )
+    return False
+
+
+def _trusted_header_user(request: Request, session: Session, settings: Settings) -> User | None:
+    """Resolve the user a trusted proxy asserts, or None."""
+    if not peer_is_trusted_proxy(request, settings):
+        logger.warning(
+            "Ignoring an identity header from an address outside the proxy allowlist",
+            extra={"peer": request.client.host if request.client else "unknown"},
+        )
+        return None
+    username = (request.headers.get(settings.trusted_header or "") or "").strip()
+    if not username:
+        return None
+    user = session.scalar(select(User).where(User.username == username))
+    if user is None:
+        # Never auto-created. See the module docstring.
+        logger.warning(
+            "A trusted proxy asserted an identity with no matching account",
+            extra={"username": username},
+        )
+    return user
+
+
+def api_token_user(request: Request, session: Session) -> User | None:
+    """The acting user for a request carrying HIVESYNC_API_TOKEN.
+
+    Full privilege, the same as the admin, and exempt from CSRF because a browser
+    never attaches a bearer token on its own. See app/csrf.py.
+    """
+    settings: Settings = request.app.state.settings
+    expected = (settings.api_token or "").strip()
+    if not expected:
+        return None
+    scheme, _, presented = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not presented:
+        return None
+    if not hmac.compare_digest(presented.strip(), expected):
+        return None
+    return _bootstrap_admin_user(session)
+
+
 def current_user(request: Request, session: Session) -> User | None:
     """Resolve the acting user, or None. Never raises."""
     settings: Settings = request.app.state.settings
@@ -116,6 +191,13 @@ def current_user(request: Request, session: Session) -> User | None:
         # Every request acts as the single admin. Warned about at startup and
         # banner-flagged in the UI.
         return _bootstrap_admin_user(session)
+
+    by_token = api_token_user(request, session)
+    if by_token is not None:
+        return by_token
+
+    if settings.auth_mode == "trusted_header":
+        return _trusted_header_user(request, session, settings)
 
     user_id = request.session.get(SESSION_USER_KEY)
     if user_id is None:

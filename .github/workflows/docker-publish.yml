@@ -86,13 +86,20 @@ jobs:
 
       # M0's acceptance criterion, asserted in CI: the container serves a login
       # page and health reports the pinned rclone and lftp versions.
+      #
+      # M8 moved the version detail behind authentication, so this signs in with
+      # the API bearer token rather than reading it from an open endpoint. The
+      # liveness endpoint is still checked unauthenticated, and asserted to
+      # disclose nothing.
       - name: Verify the image serves and reports its engine versions
         run: |
           set -euo pipefail
           key=$(python3 -c "import secrets,base64;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())")
+          api_token=$(python3 -c "import secrets;print(secrets.token_urlsafe(32))")
           docker run -d --name hivesync-ci -p 8080:8080 \
             -e HIVESYNC_SECRET_KEY="$key" \
             -e HIVESYNC_ADMIN_PASSWORD=ci-verification-only \
+            -e HIVESYNC_API_TOKEN="$api_token" \
             hivesync:ci
           for _ in $(seq 1 60); do
             status=$(docker inspect -f '{{.State.Health.Status}}' hivesync-ci)
@@ -102,12 +109,22 @@ jobs:
           done
           docker logs hivesync-ci
           test "$(docker inspect -f '{{.State.Health.Status}}' hivesync-ci)" = "healthy"
-          curl -fsS localhost:8080/api/health -o health.json
+          curl -fsS localhost:8080/api/health -o liveness.json
+          cat liveness.json
+          jq -e '.status == "ok"' liveness.json > /dev/null
+          jq -e 'has("rclone") | not' liveness.json > /dev/null
+          curl -fsS -H "Authorization: Bearer $api_token" \
+            localhost:8080/api/health/detail -o health.json
           cat health.json
           jq -e '.status == "ok"' health.json > /dev/null
           jq -e '.rclone.matches_expected == true' health.json > /dev/null
           jq -e '.lftp.version | length > 0' health.json > /dev/null
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/health/detail)" = "401"
           curl -fsS localhost:8080/login | grep -q "Sign in"
+          # A form post with no CSRF token is refused. SPEC section 15.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -d 'username=admin&password=ci-verification-only' \
+            localhost:8080/api/auth/login)" = "403"
           test "$(docker exec hivesync-ci sh -c 'grep ^Uid: /proc/1/status | tr -s "\t" " " | cut -d" " -f2')" = "1000"
           docker rm -f hivesync-ci
 

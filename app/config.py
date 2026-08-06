@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     # therefore share names, appear in the labels, so it is never open.
     metrics_token: str | None = None
 
+    # Optional bearer token for the JSON API, so scripts can drive it without a
+    # browser session. CSRF protection does not apply to bearer-authenticated
+    # requests, because a browser never attaches one on its own. This token is a
+    # full-privilege credential: anything the admin can do, it can do.
+    api_token: str | None = None
+
+    # Login rate limiting. SPEC section 15. Counted per username and per source
+    # address, whichever trips first.
+    login_max_attempts: int = 5
+    login_lockout_seconds: int = 15 * 60
+
     # Volume layout. Overridable so the app can run outside a container.
     config_dir: Path = Path("/config")
 

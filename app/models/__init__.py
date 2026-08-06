@@ -25,12 +25,14 @@ from app.models.job import (
     RunStatus,
     RunTrigger,
 )
+from app.models.login_attempt import AttemptScope, LoginAttempt
 from app.models.setting import SECRET_KEY_FINGERPRINT, Setting
 from app.models.user import User, UserRole
 
 __all__ = [
     "SECRET_KEY_FINGERPRINT",
     "ArchiveLayout",
+    "AttemptScope",
     "Base",
     "ChangeAction",
     "ChangeSide",
@@ -47,6 +49,7 @@ __all__ = [
     "Job",
     "JobRun",
     "JobRunChange",
+    "LoginAttempt",
     "NotifyOn",
     "RcloneMode",
     "RunMode",

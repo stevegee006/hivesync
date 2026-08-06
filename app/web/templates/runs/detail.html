@@ -34,6 +34,7 @@
     </p>
     <form method="post" action="/runs/{{ run.id }}/cancel"
           onsubmit="return confirm('Stop this run? Work already completed stays done, and rclone removes the file it is part way through writing.');">
+      {{ csrf_input() }}
       <button type="submit" class="text-xs text-amber-400 hover:text-amber-300">Cancel</button>
     </form>
   </div>

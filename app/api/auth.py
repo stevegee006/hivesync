@@ -4,7 +4,16 @@ One endpoint serves both the HTML form and API clients: the response shape is
 chosen from the request content type, so the login page needs no JavaScript and
 still works if the vendored assets are missing.
 
-No CSRF token yet. M8 owns that, per SPEC section 18.
+Login is rate limited per username and per source address, and the response is
+**identical** for a wrong password, an unknown username and a locked account. A
+limiter that says "too many attempts for this account" confirms the account
+exists, which undoes the equal-time comparison the rest of this file does to
+avoid exactly that. The lockout is logged, where an operator sees it and an
+attacker does not.
+
+The CSRF token is rotated on login and on logout. A token minted before
+authentication must not stay valid after it, or a value an attacker fixed in the
+victim's session survives the privilege change that made it worth fixing.
 """
 
 from __future__ import annotations
@@ -17,7 +26,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app import security
+from app import csrf, ratelimit, security
 from app.db import get_session
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -101,10 +110,11 @@ async def login(request: Request, session: Session = Depends(get_session)) -> An
             detail="A username and password are required.",
         ) from exc
 
-    user = security.authenticate(session, credentials.username, credentials.password)
-    if user is None:
-        # Deliberately identical for an unknown user and a wrong password.
-        logger.warning("Failed login attempt", extra={"username": credentials.username})
+    settings = request.app.state.settings
+    address = ratelimit.client_address(request)
+
+    def reject() -> Any:
+        # One response for every failure mode. See the module docstring.
         if html:
             return RedirectResponse(
                 url="/login?error=invalid", status_code=status.HTTP_303_SEE_OTHER
@@ -114,7 +124,29 @@ async def login(request: Request, session: Session = Depends(get_session)) -> An
             detail="That username and password combination is not valid.",
         )
 
+    verdict = ratelimit.check(session, settings, username=credentials.username, address=address)
+    if not verdict.allowed:
+        logger.warning(
+            "Login refused by the rate limiter",
+            extra={
+                "username": credentials.username,
+                "scope": verdict.scope.value if verdict.scope else None,
+                "retry_after_seconds": verdict.retry_after_seconds,
+            },
+        )
+        # The password is not even checked while locked, so a locked account
+        # cannot be probed for a correct one.
+        return reject()
+
+    user = security.authenticate(session, credentials.username, credentials.password)
+    if user is None:
+        logger.warning("Failed login attempt", extra={"username": credentials.username})
+        ratelimit.record_failure(session, username=credentials.username, address=address)
+        return reject()
+
+    ratelimit.clear(session, username=credentials.username, address=address)
     security.start_session(request, user)
+    csrf.rotate(request)
     logger.info("Login succeeded", extra={"username": user.username})
 
     if html:
@@ -126,6 +158,9 @@ async def login(request: Request, session: Session = Depends(get_session)) -> An
 @router.post("/logout")
 async def logout(request: Request) -> Any:
     security.end_session(request)
+    # end_session clears everything, including the token. Mint a fresh one so the
+    # login form this redirects to has one to submit.
+    csrf.rotate(request)
     if wants_html(request):
         return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     return JSONResponse({"detail": "Signed out."})

@@ -49,5 +49,32 @@ services:
     volumes:
       - smb-share:/share
 
+  # The suite itself, so the whole thing runs from compose rather than from a
+  # hand-assembled `docker run` that has to know the generated network name.
+  # SPEC section 18, M8.
+  #
+  #   docker compose -f docker-compose.test.yml run --rm tests
+  #
+  # Not started by `up`: it would run on every fixture restart. `profiles` keeps
+  # it out of the default set while leaving it reachable by name.
+  tests:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+      args:
+        BASE: ${HIVESYNC_IMAGE:-hivesync:latest}
+    depends_on: [sftp, ftp, smb]
+    environment:
+      # Generated per run. The suite creates and discards its own databases, so
+      # nothing here has to survive.
+      HIVESYNC_SECRET_KEY: ${HIVESYNC_TEST_SECRET_KEY:-}
+      HIVESYNC_TEST_SFTP_HOST: sftp
+      HIVESYNC_TEST_FTP_HOST: ftp
+      HIVESYNC_TEST_SMB_HOST: smb
+    volumes:
+      - .:/src
+    working_dir: /src
+
 volumes:
   smb-share:

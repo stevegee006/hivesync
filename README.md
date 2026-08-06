@@ -8,7 +8,7 @@ HiveSync implements no file transfer protocols of its own. It drives `rclone` (a
 optionally `lftp`) as subprocesses, adding scheduling, credential management, dry
 run previews, deletion archiving, and a UI.
 
-## Status: M7 complete
+## Status: M8 complete
 
 Working today, verified against the pinned rclone and live SFTP, FTP and SMB
 fixtures:
@@ -34,6 +34,10 @@ fixtures:
 - **Notifications** to a webhook or ntfy, **`/metrics`** for Prometheus,
   **retention** for archives, logs and run history, **filter presets**, and
   **configuration export and import**.
+- **Hardening**: CSRF tokens on every state-changing request, login rate
+  limiting that survives a restart, proxy-asserted identity for authentik and
+  similar, and an image built from digest-pinned bases with hash-verified
+  dependencies.
 
 Not built: the `lftp` engine. The binary is in the image and the option exists,
 but jobs that select it are refused. Whether segmented transfers are worth having
@@ -44,9 +48,12 @@ Resilio's continuous behaviour is not reproduced: a file saved now syncs at the
 next scheduled run, not a second later. If you need continuous replication, this
 is the wrong tool. See `SPEC.md` section 19.
 
-**Do not expose this to the internet.** CSRF protection, login rate limiting and
-SFTP host key pinning land in M8. Until then it belongs on a trusted network,
-optionally behind an authenticating reverse proxy.
+**Exposing it to the internet is still your risk to weigh.** M8 closed the
+specific gaps that made it unsafe: CSRF, login rate limiting, host key pinning,
+framing, and version disclosure. It has never had a third-party security review,
+there is one admin role and no audit log, and it holds credentials for every
+endpoint it syncs. A reverse proxy that authenticates in front of it is still the
+better arrangement, with `HIVESYNC_AUTH_MODE=trusted_header`.
 
 ## Quick start
 
@@ -239,8 +246,55 @@ bearer token; without it the endpoint requires a logged-in session. It is never
 open, because job names appear in the metric labels and those are your share
 names.
 
+`HIVESYNC_API_TOKEN` authenticates the JSON API for scripts. Bearer-authenticated
+requests skip the CSRF check, because a browser never attaches a bearer token on
+its own, so there is nothing for a cross-site page to forge. Treat it as a full
+admin credential.
+
+`HIVESYNC_AUTH_MODE=trusted_header` accepts an identity asserted by a reverse
+proxy. Set `HIVESYNC_TRUSTED_HEADER` to the header your proxy injects and
+`HIVESYNC_TRUSTED_PROXIES` to its address range. The header is honoured only when
+the connection's own peer address is inside that range, never on the strength of
+an `X-Forwarded-For` the client could have written itself, and it maps to an
+account that already exists: it will not create one.
+
+`HIVESYNC_LOGIN_MAX_ATTEMPTS` (5) and `HIVESYNC_LOGIN_LOCKOUT_SECONDS` (900)
+bound login attempts, counted per username and per source address and stored in
+the database so a restart does not clear a lockout.
+
 Everything else is configured from the Settings screen and stored in the
 database: notification target, retention, and log limits.
+
+## Security
+
+What is in place:
+
+- Credentials encrypted at rest with a key the application never persists, and
+  never returned by any endpoint or written to any log. A sweep test greps every
+  log file, database column, `/config` file, export document and API response for
+  known sentinel values.
+- CSRF tokens on every state-changing request, enforced in middleware so a new
+  route is protected without anyone remembering to protect it. Login is included:
+  without a token there, someone can log you into an account they control.
+- Login rate limiting per username and per source address. A wrong password, an
+  unknown username and a locked account are indistinguishable in the response.
+- SFTP host keys pinned per connection on first use. A changed key fails the run
+  and says so.
+- Argon2id password hashing, HttpOnly SameSite=Lax session cookies, and a
+  restrictive content security policy that refuses framing.
+- `/api/health` reports liveness only. Binary versions moved to
+  `/api/health/detail`, which needs authentication.
+- Base images pinned by digest and Python dependencies installed with
+  `--require-hashes`, so a re-uploaded artifact fails the build rather than
+  shipping.
+- No outbound telemetry. The only outbound requests are the ones you configure: a
+  notification target, and the endpoints your jobs sync with.
+
+What is not:
+
+- One admin role. There is no per-user permission model and no audit log.
+- No third-party security review.
+- No secrets manager integration. The encryption key is an environment variable.
 
 ## Observability
 
@@ -274,8 +328,10 @@ pruning an archive is the one operation here with nothing behind it.
 
 | Tool | Version | How |
 |---|---|---|
+| Base images | pinned by digest | `python:3.12-slim` and `debian:trixie-slim`, by manifest digest |
+| Python packages | exact, with hashes | `requirements.lock`, installed with `--require-hashes` |
 | rclone | 1.74.4 | Official release zip, SHA256 verified against a pinned digest |
-| lftp | 4.9.2 | Debian trixie, not version pinned, see below |
+| lftp | 4.9.2 | Debian trixie, at the pinned base image digest, see below |
 | Tailwind CLI | 4.3.3 | Standalone Go binary, no Node in the build |
 | htmx | 2.0.10 | Vendored, not a CDN |
 | Alpine.js | 3.15.12 | Vendored, not a CDN |
@@ -284,10 +340,27 @@ Versions live in `versions.env`. rclone is pinned by digest because a tool that
 deletes files should not run an unverified binary; if that check fails, re-read the
 published `SHA256SUMS` and update `versions.env` rather than bypassing it.
 
-lftp is deliberately not pinned to an exact apt version. Debian trixie ships one
-lftp and only security patches it, so an exact pin turns every future point release
-into a build failure for no safety gain. `make pin-versions` reports what the built
-image actually contains.
+lftp is not pinned to an exact apt version, but the base image digest pins the
+apt snapshot it comes from, so the same build produces the same lftp. Debian
+trixie ships one lftp and only security patches it, so an exact apt pin would turn
+every future point release into a build failure for no safety gain.
+`make pin-versions` reports what the built image actually contains.
+
+`requirements.txt` is the hand-edited list; `requirements.lock` is generated from
+it with a hash for every distribution. After changing a dependency, run:
+
+```bash
+make lock-deps
+```
+
+Without that the build fails rather than silently installing something
+unverified, which is the intended behaviour.
+
+Base image digests are refreshed deliberately, not automatically:
+
+```bash
+docker buildx imagetools inspect python:3.12-slim --format '{{.Manifest.Digest}}'
+```
 
 bisync flags in particular vary between rclone versions, so record the version in
 use when reporting a problem.
@@ -368,10 +441,16 @@ Integration tests run against throwaway SFTP, FTP and SMB containers:
 make test-integration
 ```
 
-The fixtures are declared in `docker-compose.test.yml`. The integration suite
-uses all three: connection tests, capability probes, dry runs, live syncs,
-bidirectional runs and deletion archiving all run against real servers rather
-than against fakes.
+The fixtures and the test runner are both declared in `docker-compose.test.yml`,
+so the suite runs from compose rather than from a hand-assembled `docker run`:
+
+```bash
+docker compose -f docker-compose.test.yml run --rm --build tests
+```
+
+The integration suite uses all three fixtures: connection tests, capability
+probes, dry runs, live syncs, bidirectional runs, deletion archiving and the
+README walkthrough all run against real servers rather than against fakes.
 
 ## License
 

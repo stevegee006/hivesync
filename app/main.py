@@ -26,11 +26,12 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import __version__, binaries, crypto, filter_presets, security, web
+from app import __version__, binaries, crypto, csrf, filter_presets, security, web
 from app.api import api_router
 from app.api import metrics as metrics_api
 from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, session_scope
+from app.headers import SecurityHeadersMiddleware
 from app.jobs.planner import PlanRunner
 from app.jobs.runner import LiveRunner
 from app.jobs.scheduler import JobScheduler
@@ -136,14 +137,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     crypto.validate_key(settings.secret_key)
     settings.ensure_directories()
 
-    if settings.auth_mode == "trusted_header":
-        raise StartupError(
-            "HIVESYNC_AUTH_MODE=trusted_header is not implemented yet. It arrives "
-            "in the hardening milestone, together with the proxy allowlist checks "
-            "that make it safe. Use 'local' for now, or 'none' if an "
-            "authenticating proxy already sits in front of HiveSync."
-        )
-
     app = FastAPI(
         title="HiveSync",
         version=__version__,
@@ -179,6 +172,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.session_factory, app.state.live_runner, settings=settings
     )
 
+    # Middleware runs outermost-last, so the session must be added after CSRF for
+    # the CSRF check to see a decoded session. Getting this order wrong means the
+    # token is never found and every form breaks, which is at least loud.
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(csrf.CsrfMiddleware)
     app.add_middleware(
         SessionMiddleware,
         secret_key=crypto.derive_session_secret(settings.secret_key),

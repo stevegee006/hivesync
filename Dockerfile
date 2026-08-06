@@ -5,6 +5,17 @@
 #
 # Build with `make build`. A bare `docker build` also works, but then the
 # defaults below apply instead of versions.env.
+#
+# Base images are pinned by digest, not by tag. A tag is a moving target: the
+# same `docker build` a month from now silently produces a different image, and
+# for lftp the tag is also what decides which apt snapshot is in play. Pinning
+# the digest is what makes the "observed lftp 4.9.2" in CLAUDE.md a fact about
+# this image rather than a note about one afternoon.
+#
+# ARGs before the first FROM, which is the only place Docker will expand them in
+# an image reference.
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:646fb0bca3dd3ea1bcc6feb72c17ed16eed6e10cffc732fcc1478bd3e7f02d7b
+ARG DEBIAN_IMAGE=debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 
 # ---------------------------------------------------------------------------
 # rclone, from the official release rather than the distro package, which lags.
@@ -13,7 +24,7 @@
 # The digest check is not optional. This binary deletes files for a living, and
 # a corrupted or substituted download is not something to discover at run time.
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim AS rclone
+FROM ${DEBIAN_IMAGE} AS rclone
 
 ARG RCLONE_VERSION=1.74.4
 ARG RCLONE_SHA256_AMD64=fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d
@@ -52,7 +63,7 @@ RUN set -eux; \
 # Tailwind publishes no checksum file for these assets, so there is no digest to
 # pin here. Lower stakes than rclone: this stage only produces CSS and JS.
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim AS assets
+FROM ${DEBIAN_IMAGE} AS assets
 
 ARG TAILWIND_VERSION=4.3.3
 ARG HTMX_VERSION=2.0.10
@@ -99,7 +110,7 @@ COPY --from=assets /out/ /
 # tooling. cryptography, argon2-cffi and pydantic-core all ship manylinux wheels
 # for amd64 and arm64, so no compiler is needed here either.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS pydeps
+FROM ${PYTHON_IMAGE} AS pydeps
 
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -111,7 +122,7 @@ RUN python -m venv /opt/venv \
 # ---------------------------------------------------------------------------
 # Runtime.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
 
 ARG RCLONE_VERSION=1.74.4
 

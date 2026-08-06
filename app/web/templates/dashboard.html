@@ -93,6 +93,7 @@
 
     <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
       <form method="post" action="/jobs/{{ job.id }}/run">
+        {{ csrf_input() }}
         <button type="submit" class="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800">
           Dry run
         </button>
@@ -101,6 +102,7 @@
          action on a dashboard must not be a quicker way to delete files. #}
       <form method="post" action="/jobs/{{ job.id }}/run-live"
             onsubmit="return confirm('Run {{ job.name }} for real? It plans first and refuses if more than {{ job.max_delete_pct }}% of the destination would be removed.');">
+        {{ csrf_input() }}
         <button type="submit" class="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800">
           Run
         </button>

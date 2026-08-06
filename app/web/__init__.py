@@ -23,11 +23,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from jinja2.runtime import Context
+from markupsafe import Markup
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import __version__, capabilities, notify, portable, probe, security
+from app import __version__, capabilities, csrf, notify, portable, probe, security
 from app import preferences as preferences_store
 from app.api.auth import safe_redirect_target
 from app.api.connections import capability_summary, to_read
@@ -100,7 +101,34 @@ def _localtime(context: Context, value: datetime | None, fmt: str = "%Y-%m-%d %H
     return value.astimezone(zone).strftime(fmt)
 
 
+@pass_context
+def _csrf_input(context: Context) -> Markup:
+    """A hidden input carrying the session's CSRF token.
+
+    A Jinja global rather than a context variable so it cannot be forgotten by a
+    context builder: every template has `request`, so every form can reach this
+    regardless of which route rendered it. `test_csrf.py` asserts that every form
+    on every page actually calls it.
+    """
+    request = context.get("request")
+    if request is None:
+        return Markup("")
+    # Markup.format escapes its arguments, so the token cannot break out of the
+    # attribute even though it is generated rather than user supplied.
+    template = Markup('<input type="hidden" name="{field}" value="{token}">')
+    return template.format(field=csrf.FORM_FIELD, token=csrf.token_for(request))
+
+
+@pass_context
+def _csrf_token(context: Context) -> str:
+    """The raw token, for the HTMX header attribute."""
+    request = context.get("request")
+    return csrf.token_for(request) if request is not None else ""
+
+
 templates.env.filters["localtime"] = _localtime
+templates.env.globals["csrf_input"] = _csrf_input
+templates.env.globals["csrf_token"] = _csrf_token
 
 _LOGIN_ERRORS = {
     "invalid": "That username and password combination is not valid.",
