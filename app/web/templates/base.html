@@ -58,9 +58,160 @@
   </header>
   {% endblock %}
 
-  <main class="mx-auto max-w-7xl px-4 py-8">
+  <main class="mx-auto max-w-7xl px-4 py-8 pb-40">
     {% block content %}{% endblock %}
   </main>
+
+  {% if user %}
+  {# The activity strip, modelled on Resilio's. One poll feeds all of it: an SSE
+     stream per running job would open one connection per card on top of the
+     page, and browsers allow about six per host. #}
+  <div id="activity-strip"
+       class="fixed inset-x-0 bottom-0 border-t border-slate-800 bg-slate-950/95 backdrop-blur">
+    <div class="mx-auto flex max-w-7xl flex-wrap items-stretch gap-4 px-4 py-2 text-xs">
+
+      <div class="w-40 shrink-0 space-y-1">
+        <p class="uppercase tracking-wide text-slate-500">Network</p>
+        <p class="text-emerald-400">
+          &#9650; <span data-activity="up">0 B/s</span>
+        </p>
+        <p class="text-sky-400">
+          &#9660; <span data-activity="down">0 B/s</span>
+        </p>
+      </div>
+
+      <div class="min-w-0 flex-1">
+        <div class="flex items-baseline justify-between">
+          <span class="uppercase tracking-wide text-slate-500">
+            <span data-activity="running-count">idle</span>
+          </span>
+          <span class="space-x-2 font-mono text-slate-600">
+            {% for label in ['1m', '10m', '1h'] %}
+            <button type="button" data-window="{{ label }}"
+                    class="hover:text-slate-300">{{ label }}</button>
+            {% endfor %}
+          </span>
+        </div>
+        {# Drawn as a plain SVG polyline. No chart library, nothing from a CDN,
+           consistent with everything else being vendored. #}
+        <svg viewBox="0 0 600 60" preserveAspectRatio="none"
+             class="mt-1 h-14 w-full rounded bg-slate-900/60">
+          <polyline data-activity="chart" fill="none" stroke="currentColor"
+                    class="text-emerald-500" stroke-width="1.5" points="" />
+        </svg>
+        <p class="mt-0.5 truncate text-slate-500" data-activity="current"></p>
+      </div>
+
+      <div class="w-44 shrink-0 space-y-1 border-l border-slate-800 pl-4">
+        <p class="uppercase tracking-wide text-slate-500">Session</p>
+        <p class="text-slate-300">
+          peak <span class="font-mono" data-activity="session-peak">0 B/s</span>
+        </p>
+        <p class="text-slate-300">
+          sent <span class="font-mono" data-activity="session-bytes">0 B</span>
+        </p>
+      </div>
+
+      <div class="w-44 shrink-0 space-y-1 border-l border-slate-800 pl-4">
+        <p class="uppercase tracking-wide text-slate-500">Lifetime</p>
+        <p class="text-slate-300">
+          <span class="font-mono" data-activity="lifetime">0 B</span>
+        </p>
+        <p class="truncate text-slate-500" data-activity="last-synced">never synced</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var strip = document.getElementById("activity-strip");
+      if (!strip) return;
+
+      var windowKey = "1m";
+      var timer = null;
+
+      function el(name) { return strip.querySelector('[data-activity="' + name + '"]'); }
+
+      function bytes(value) {
+        var units = ["B", "KB", "MB", "GB", "TB"];
+        var index = 0;
+        var amount = Number(value) || 0;
+        while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index++; }
+        return (index === 0 ? amount.toFixed(0) : amount.toFixed(1)) + " " + units[index];
+      }
+
+      function rate(value) { return bytes(value) + "/s"; }
+
+      function draw(samples) {
+        var chart = el("chart");
+        if (!chart) return;
+        if (!samples.length) { chart.setAttribute("points", ""); return; }
+        var peak = Math.max.apply(null, samples);
+        // A flat line at the bottom rather than a misleading full-height one
+        // when nothing is moving.
+        var scale = peak > 0 ? peak : 1;
+        var step = samples.length > 1 ? 600 / (samples.length - 1) : 600;
+        var points = samples.map(function (value, index) {
+          var y = 58 - (value / scale) * 54;
+          return (index * step).toFixed(1) + "," + y.toFixed(1);
+        });
+        chart.setAttribute("points", points.join(" "));
+      }
+
+      function apply(data) {
+        el("up").textContent = rate(data.up_speed);
+        el("down").textContent = rate(data.down_speed);
+        el("session-peak").textContent = rate(data.session_max_speed);
+        el("session-bytes").textContent = bytes(data.session_bytes);
+        el("lifetime").textContent = bytes(data.lifetime_bytes);
+        el("last-synced").textContent = data.last_synced
+          ? "last synced " + new Date(data.last_synced).toLocaleString()
+          : "never synced";
+
+        var count = data.running.length;
+        el("running-count").textContent = count
+          ? count + (count === 1 ? " job running" : " jobs running")
+          : "idle";
+
+        var busiest = data.running[0];
+        el("current").textContent = busiest
+          ? busiest.job_name + ": " + (busiest.current_file || "comparing") +
+            " " + busiest.percentage + "%" +
+            (busiest.eta_seconds !== null ? ", " + busiest.eta_seconds + "s left" : "")
+          : "";
+
+        draw(data.samples);
+        // Poll hard only while something is happening. An idle instance has no
+        // reason to be asked twice a second forever.
+        schedule(count ? 2000 : 15000);
+      }
+
+      function schedule(delay) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(poll, delay);
+      }
+
+      function poll() {
+        fetch("/api/activity?window=" + windowKey, { headers: { "Accept": "application/json" } })
+          .then(function (response) { return response.ok ? response.json() : null; })
+          .then(function (data) { if (data) apply(data); else schedule(15000); })
+          .catch(function () { schedule(15000); });
+      }
+
+      strip.querySelectorAll("[data-window]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          windowKey = button.getAttribute("data-window");
+          strip.querySelectorAll("[data-window]").forEach(function (other) {
+            other.classList.toggle("text-slate-200", other === button);
+          });
+          poll();
+        });
+      });
+
+      poll();
+    })();
+  </script>
+  {% endif %}
 
   <footer class="mx-auto max-w-7xl px-4 pb-8 pt-4 text-xs text-slate-600">
     <span class="font-mono">rclone {{ rclone_version or 'unavailable' }}</span>

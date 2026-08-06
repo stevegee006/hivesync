@@ -16,7 +16,8 @@ import contextlib
 import logging
 import queue
 import threading
-from collections import OrderedDict
+import time
+from collections import OrderedDict, deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
@@ -138,3 +139,96 @@ class RunBroker:
 
 
 broker = RunBroker()
+
+
+# One hour of samples at the 5 second stats interval, which is what the chart's
+# widest window needs. Held in memory and lost on restart, exactly like the
+# session figures it feeds.
+_SAMPLE_MEMORY = (60 * 60) // 5
+
+
+@dataclass(frozen=True)
+class SpeedSample:
+    """One point on the activity chart."""
+
+    at: float  # Unix seconds
+    speed: float  # bytes per second, summed across every active run
+
+
+class ActivityRecorder:
+    """Live progress, kept apart from the log-line backlog on purpose.
+
+    Stats arrive every few seconds for the whole length of a sync. Folding them
+    into the same bounded backlog as the log lines would evict the lines, which
+    are the thing someone actually reads when a run goes wrong. So the latest
+    stats live here, one per run, replaced rather than accumulated.
+
+    Session totals reset when the process does, which matches what they mean:
+    "since this instance started". The lifetime figure comes from the database
+    instead, where it belongs.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._latest: dict[int, object] = {}
+        self._samples: deque[SpeedSample] = deque(maxlen=_SAMPLE_MEMORY)
+        self._session_bytes = 0
+        self._session_max_speed = 0.0
+        self._counted: dict[int, int] = {}
+
+    def record(self, run_id: int, stats: object, *, at: float | None = None) -> None:
+        """Store the latest stats for a run and fold them into the session."""
+        moment = at if at is not None else time.time()
+        with self._lock:
+            self._latest[run_id] = stats
+
+            # Bytes are cumulative per run, so the session total takes the
+            # increment rather than the running figure, or every sample would
+            # count the same bytes again.
+            done = int(getattr(stats, "bytes_done", 0) or 0)
+            previous = self._counted.get(run_id, 0)
+            if done >= previous:
+                self._session_bytes += done - previous
+            self._counted[run_id] = done
+
+            total = sum(
+                float(getattr(entry, "speed", 0.0) or 0.0) for entry in self._latest.values()
+            )
+            self._session_max_speed = max(self._session_max_speed, total)
+            self._samples.append(SpeedSample(at=moment, speed=total))
+
+    def forget(self, run_id: int) -> None:
+        """Drop a finished run, and record the drop as a sample.
+
+        Without the extra sample the chart holds its last speed flat until the
+        next one arrives, which reads as "still transferring at 60 MB/s" for
+        several seconds after a sync has stopped.
+        """
+        with self._lock:
+            self._latest.pop(run_id, None)
+            self._counted.pop(run_id, None)
+            total = sum(
+                float(getattr(entry, "speed", 0.0) or 0.0) for entry in self._latest.values()
+            )
+            self._samples.append(SpeedSample(at=time.time(), speed=total))
+
+    def latest(self, run_id: int) -> object | None:
+        with self._lock:
+            return self._latest.get(run_id)
+
+    def active(self) -> dict[int, object]:
+        with self._lock:
+            return dict(self._latest)
+
+    def samples(self, *, since_seconds: float) -> list[SpeedSample]:
+        cutoff = time.time() - since_seconds
+        with self._lock:
+            return [sample for sample in self._samples if sample.at >= cutoff]
+
+    def session(self) -> tuple[int, float]:
+        """Bytes transferred and the peak speed seen since this process started."""
+        with self._lock:
+            return self._session_bytes, self._session_max_speed
+
+
+activity = ActivityRecorder()

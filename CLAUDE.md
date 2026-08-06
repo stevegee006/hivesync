@@ -12,8 +12,8 @@ Read `SPEC.md` before starting any milestone.
 
 | Field | Value |
 |---|---|
-| Milestone in progress | none. Every milestone in SPEC section 18 is done |
-| Milestones complete | M0 through M8 |
+| Milestone in progress | none. M9 was added beyond SPEC section 18 |
+| Milestones complete | M0 through M8, plus M9 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
 | Observed lftp version | 4.9.2, now reproducible: the base image is pinned by digest, which pins the apt snapshot |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
@@ -94,6 +94,7 @@ needs `docker login` and a manual QEMU binfmt registration, so prefer the tag.
 - Only one run per job at a time.
 - Every state-changing request carries a CSRF token, or is authenticated by a bearer token that a browser cannot be made to send.
 - A login failure, an unknown username and a locked account are indistinguishable to the caller.
+- Continuous mode is one way only, and a continuous cycle that changed nothing leaves no run row.
 
 ## Commands
 
@@ -142,6 +143,7 @@ app/
   capabilities.py    probe interpretation and the two-endpoint intersection
   jobs/
     planner.py       dry run lifecycle, run creation, overlap refusal
+    watcher.py       continuous mode: the polling loop and its backoff
     runner.py        run lifecycle, subprocess supervision, cancellation
     scheduler.py     APScheduler wiring, plus the nightly maintenance pass
     archive.py       backup-dir path computation and validation
@@ -150,7 +152,7 @@ app/
     cron.py          expression validation and fire-time preview
   api/               route modules mirroring SPEC.md section 12
                      health, auth, connections, credentials, rclone, jobs,
-                     presets, settings, metrics
+                     presets, settings, metrics, activity
                      deps.py provides CurrentUser, so auth resolves before
                      body validation
   web/               Jinja templates, HTMX partials
@@ -264,6 +266,11 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-06, ux, a dry run published nothing to the broker at all: `planner.py` never imported it, so the run detail page showed a live pane that never updated and never reloaded. The lesson is not about SSE, it is that two runners with the same user-facing shape drifted apart because only one of them was wired to the thing the UI watches.
 - 2026-08-06, process, **hand testing found five real bugs in an hour that 414 automated tests did not.** All of them lived where the tests do not look: JavaScript execution, container environment plumbing, and connection lifetime. Server-rendered assertions cannot see any of it. Run the thing before believing a milestone is done.
 
+- 2026-08-06, rclone, **no backend HiveSync supports can announce a change.** `rclone backend features` reports `ChangeNotify: false` for local, sftp, ftp and smb, so `--poll-interval` does nothing for any of them and anything called "continuous" is polling. Design accordingly and say so in the UI rather than implying a watch.
+- 2026-08-06, rclone, a `--stats` event under `--use-json-log` carries the whole progress picture: `bytes`, `totalBytes`, `speed`, `eta`, plus a `transferring` array with per-file `percentage`, `speed` and `eta`. There is **no up/down split**; direction is a property of the job, not of the transfer.
+- 2026-08-06, ops, **a run left in `running` by a restart blocks its job forever.** The partial unique index refuses a second active run, so every later cycle hits the overlap guard: a scheduled job records skip after skip and a continuous job stops looking entirely, with nothing in the log saying why. Startup now fails those rows with an explanation rather than deleting them, because work may have happened on disk before the process died and the next run's brake reads the resulting state. Found by restarting the container mid-sync.
+- 2026-08-06, ux, a progress feed and a log are different things with different retention. Stats every few seconds will flush a bounded log backlog if they share it, and the log is what someone actually reads when a run fails.
+
 ### M1 acceptance status, verified 2026-08-05
 
 All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,
@@ -280,6 +287,66 @@ FTP and SMB fixtures, ruff and mypy clean.
 Remaining for M1: nothing blocking. The connection editor, credentials page,
 directory browser and compatibility page are built; the job editor that will
 consume the intersection logic belongs to a later milestone.
+
+### M9 live activity, continuous mode and a schedule builder, verified 2026-08-06
+
+Added beyond SPEC section 18, at the operator's request. 491 unit tests.
+
+**Every figure on the dashboard comes from rclone's own accounting.** We already
+passed `--stats 5s --use-json-log` and threw the result away. A stats event
+carries `bytes`, `totalBytes`, `speed`, `eta`, `elapsedTime` and a `transferring`
+array with per-file `percentage`, `speed` and `eta`. Nothing is computed here
+except the session totals.
+
+**rclone reports no up/down split.** There is one `speed` and one `bytes`. Which
+direction that represents is a property of the job, so `activity.direction_of`
+derives it from where the job writes: to a remote is up, from a remote to local
+is down, local to local is neither, and remote to remote is claimed as neither
+rather than counted twice. Derived and labelled as derived.
+
+**The dashboard polls one endpoint rather than opening a stream per card.**
+`GET /api/activity`, every two seconds while anything runs and every fifteen when
+idle. An SSE stream per job would open one connection per card on top of the
+page, and this application has already been brought to a halt once by leaking
+those against the browser's six-per-host limit.
+
+**Live stats are kept apart from the log backlog.** Progress arrives every few
+seconds for the length of a sync; folding it into the same bounded backlog would
+evict the log lines, which are what someone reads when a run goes wrong.
+
+**Continuous mode is polling, and says so.** `ChangeNotify` is false for local,
+sftp, ftp and smb alike, verified against 1.74.4, so no backend here can announce
+a change and `--poll-interval` does nothing for any of them. The loop therefore
+backs off: the floor after a cycle that moved something, doubling towards the
+ceiling while nothing does. Three constraints, each refused at save time or
+enforced in the runner:
+
+- One way only. bisync lists both sides and carries workdir state.
+- A quiet period via `--min-age`, so a file still being written is left until it
+  settles rather than copied half finished.
+- A successful cycle that moved nothing records no run. A sixty second loop is
+  1,440 rows a day, and keeping them buries the runs that matter.
+  `Job.last_checked_at` carries the proof of life instead. Verified by hand: 20
+  cycles ran, 4 run rows, `last_checked_at` advancing throughout.
+
+**The schedule builder writes the cron field rather than replacing it.** Cron can
+express things no set of dropdowns can, so the expression stays editable and is
+parsed back into the controls only for shapes they can represent. Anything else
+reads "custom" and is left exactly as written.
+
+Acceptance criteria, all six met:
+
+1. A running job shows speed, ETA, percentage and the current file, updating as
+   it goes and clearing when it ends. Measured at 100 MB/s against the sandbox.
+2. Stats never evict log lines, and the dashboard opens one connection whatever
+   is running.
+3. A continuous job re-runs at the floor after a change and widens to the ceiling
+   when idle.
+4. Continuous plus bidirectional is refused, as is continuous plus a schedule.
+5. Idle continuous checking adds no run rows; a cycle that transfers something
+   does.
+6. The builder round-trips a weekly schedule and leaves a hand-written expression
+   untouched.
 
 ### M8 hardening, verified 2026-08-06
 

@@ -188,6 +188,28 @@ class Job(Base, TimestampMixin):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
     timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Continuous mode. SPEC section 19 lists real-time watching as a non-goal and
+    # this deliberately reverses that, with the limit stated plainly: no backend
+    # here can announce a change. Verified against rclone 1.74.4, ChangeNotify is
+    # false for local, sftp, ftp and smb alike, so "continuous" means polling with
+    # a backoff rather than anything push based.
+    continuous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The floor: how soon after a run that changed something to look again.
+    continuous_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    # The ceiling: how far to back off while nothing is changing. Each poll is a
+    # full listing of both endpoints, so this is what keeps a large NAS tree from
+    # being walked continuously for no reason.
+    continuous_idle_interval_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=900
+    )
+    # Passed to rclone as --min-age, so a file still being written is left until
+    # it settles rather than copied half finished.
+    quiet_period_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # Proof of life for a continuous job between the runs that actually did
+    # something. A check that changes nothing records no run, so without this the
+    # UI could not tell "watching quietly" from "stopped".
+    last_checked_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
     notify_on: Mapped[NotifyOn] = mapped_column(
         str_enum(NotifyOn, length=16), nullable=False, default=NotifyOn.failure
     )

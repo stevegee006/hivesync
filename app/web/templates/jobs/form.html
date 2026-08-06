@@ -294,7 +294,58 @@
   <section class="grid grid-cols-1 gap-6 border-t border-slate-800 pt-6 lg:grid-cols-2">
     <div>
       <label for="schedule_cron" class="block text-sm text-slate-400">Schedule</label>
-      <div class="mt-1 flex gap-2">
+
+      {# A builder over the cron field rather than instead of it. Cron can say
+         things no set of dropdowns can, so the expression stays editable and the
+         builder writes into it. Opening a job parses the expression back into
+         the controls where it fits a shape they can represent, and says
+         "custom" rather than silently rewriting one they cannot. #}
+      <div id="schedule-builder" class="mt-1 space-y-2 rounded border border-slate-800 bg-slate-900/40 p-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <select data-cron="mode"
+                  class="rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100">
+            <option value="manual">on demand only</option>
+            <option value="minutes">every N minutes</option>
+            <option value="hourly">hourly</option>
+            <option value="daily">daily</option>
+            <option value="weekly">weekly</option>
+            <option value="custom">custom expression</option>
+          </select>
+
+          <label class="flex items-center gap-1 text-xs text-slate-400" data-cron-when="minutes">
+            every
+            <input type="number" min="1" max="59" value="15" data-cron="every"
+                   class="w-16 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100">
+            minutes
+          </label>
+
+          <label class="flex items-center gap-1 text-xs text-slate-400" data-cron-when="hourly">
+            at
+            <select data-cron="minute-only"
+                    class="rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100"></select>
+            past the hour
+          </label>
+
+          <label class="flex items-center gap-1 text-xs text-slate-400" data-cron-when="daily weekly">
+            at
+            <select data-cron="hour"
+                    class="rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100"></select>
+            :
+            <select data-cron="minute"
+                    class="rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100"></select>
+          </label>
+        </div>
+
+        <div class="flex flex-wrap gap-3 text-xs text-slate-300" data-cron-when="weekly">
+          {% for index, day in [(1,'Mon'),(2,'Tue'),(3,'Wed'),(4,'Thu'),(5,'Fri'),(6,'Sat'),(0,'Sun')] %}
+          <label class="flex items-center gap-1">
+            <input type="checkbox" data-cron="day" value="{{ index }}"> {{ day }}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="mt-2 flex gap-2">
         <input id="schedule_cron" name="schedule_cron" placeholder="30 2 * * *"
                value="{{ job.schedule_cron or '' if job else '' }}"
                class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
@@ -329,6 +380,49 @@
         </div>
         {% endif %}
       {% endif %}
+
+      <div class="mt-4 rounded border border-slate-800 bg-slate-900/40 p-3"
+           x-data="{ continuous: {{ 'true' if job and job.continuous else 'false' }} }">
+        <label class="flex items-start gap-2 text-sm text-slate-300">
+          <input type="checkbox" name="continuous" value="true" class="mt-0.5"
+                 x-model="continuous"
+                 {% if job and job.continuous %}checked{% endif %}>
+          <span>
+            Watch continuously
+            <span class="mt-0.5 block text-xs text-slate-500">
+              Re-checks on a loop instead of a schedule. Nothing here can be told
+              when a file changes: no backend HiveSync supports announces one, so
+              this polls, and each poll lists both endpoints in full.
+            </span>
+          </span>
+        </label>
+
+        <div x-show="continuous" x-cloak class="mt-3 space-y-3">
+          <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+            check every
+            <input type="number" name="continuous_interval_seconds" min="5" max="86400"
+                   value="{{ job.continuous_interval_seconds if job else 60 }}"
+                   class="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100">
+            seconds, backing off to
+            <input type="number" name="continuous_idle_interval_seconds" min="5" max="86400"
+                   value="{{ job.continuous_idle_interval_seconds if job else 900 }}"
+                   class="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100">
+            seconds while idle
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+            ignore files changed in the last
+            <input type="number" name="quiet_period_seconds" min="0" max="3600"
+                   value="{{ job.quiet_period_seconds if job else 30 }}"
+                   class="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100">
+            seconds
+          </div>
+          <p class="text-xs text-slate-500">
+            The quiet period leaves a file that is still being written until it
+            settles. A check that changes nothing records no run, so the history
+            keeps only the cycles that did something.
+          </p>
+        </div>
+      </div>
 
       <label class="mt-3 flex items-center gap-2 text-sm text-slate-300">
         <input type="checkbox" name="enabled" value="true"
@@ -511,6 +605,109 @@
     </button>
   </form>
 </section>
+
+{# The builder writes the cron field; the field remains the source of truth, so
+   anything typed by hand survives and anything the builder cannot represent is
+   left alone under "custom". #}
+<script>
+  (function () {
+    var root = document.getElementById("schedule-builder");
+    var field = document.getElementById("schedule_cron");
+    if (!root || !field) return;
+
+    function control(name) { return root.querySelector('[data-cron="' + name + '"]'); }
+    var mode = control("mode");
+    var every = control("every");
+    var hour = control("hour");
+    var minute = control("minute");
+    var minuteOnly = control("minute-only");
+    var days = Array.prototype.slice.call(root.querySelectorAll('[data-cron="day"]'));
+
+    function fill(select, count, step) {
+      for (var value = 0; value < count; value += (step || 1)) {
+        var option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = value < 10 ? "0" + value : String(value);
+        select.appendChild(option);
+      }
+    }
+    fill(hour, 24);
+    fill(minute, 60, 5);
+    fill(minuteOnly, 60, 5);
+
+    function show() {
+      root.querySelectorAll("[data-cron-when]").forEach(function (node) {
+        var applies = node.getAttribute("data-cron-when").split(" ");
+        node.style.display = applies.indexOf(mode.value) === -1 ? "none" : "";
+      });
+      // Typing an expression by hand is the escape hatch, so the field is only
+      // read-only while the builder owns it.
+      field.readOnly = mode.value !== "custom";
+      field.classList.toggle("opacity-60", field.readOnly);
+    }
+
+    function compose() {
+      if (mode.value === "custom") return;
+      if (mode.value === "manual") { field.value = ""; return; }
+      if (mode.value === "minutes") {
+        field.value = "*/" + (every.value || "15") + " * * * *";
+        return;
+      }
+      if (mode.value === "hourly") {
+        field.value = (minuteOnly.value || "0") + " * * * *";
+        return;
+      }
+      var chosen = days.filter(function (box) { return box.checked; })
+                       .map(function (box) { return box.value; });
+      var dayField = (mode.value === "weekly" && chosen.length) ? chosen.join(",") : "*";
+      field.value = (minute.value || "0") + " " + (hour.value || "0") + " * * " + dayField;
+    }
+
+    function parse(expression) {
+      var parts = (expression || "").trim().split(/\s+/);
+      if (!expression || !expression.trim()) { mode.value = "manual"; return; }
+      if (parts.length !== 5) { mode.value = "custom"; return; }
+
+      var min = parts[0], hr = parts[1], dom = parts[2], mon = parts[3], dow = parts[4];
+      if (dom !== "*" || mon !== "*") { mode.value = "custom"; return; }
+
+      var interval = /^\*\/(\d+)$/.exec(min);
+      if (interval && hr === "*" && dow === "*") {
+        mode.value = "minutes";
+        every.value = interval[1];
+        return;
+      }
+      if (/^\d+$/.test(min) && hr === "*" && dow === "*") {
+        mode.value = "hourly";
+        minuteOnly.value = String(Number(min));
+        return;
+      }
+      if (/^\d+$/.test(min) && /^\d+$/.test(hr)) {
+        minute.value = String(Number(min));
+        hour.value = String(Number(hr));
+        if (dow === "*") { mode.value = "daily"; return; }
+        if (/^[0-6](,[0-6])*$/.test(dow)) {
+          mode.value = "weekly";
+          var wanted = dow.split(",");
+          days.forEach(function (box) {
+            box.checked = wanted.indexOf(box.value) !== -1;
+          });
+          return;
+        }
+      }
+      // Anything else is left exactly as written rather than approximated.
+      mode.value = "custom";
+    }
+
+    [mode, every, hour, minute, minuteOnly].concat(days).forEach(function (node) {
+      node.addEventListener("change", function () { show(); compose(); });
+    });
+
+    parse(field.value);
+    show();
+  })();
+</script>
+
 {% endif %}
 {% endif %}
 {% endblock %}

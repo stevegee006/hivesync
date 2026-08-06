@@ -71,6 +71,10 @@ _SCALARS = (
     "check_access",
     "schedule_cron",
     "timezone",
+    "continuous",
+    "continuous_interval_seconds",
+    "continuous_idle_interval_seconds",
+    "quiet_period_seconds",
     "timeout_seconds",
     "notify_on",
 )

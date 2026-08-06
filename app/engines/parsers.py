@@ -216,3 +216,103 @@ def summarise_errors(lines: Iterable[str], limit: int = 20) -> list[str]:
         return collected
     remaining = len(collected) - limit
     return [*collected[:limit], f"and {remaining} more errors"]
+
+
+@dataclass(frozen=True)
+class FileProgress:
+    """One file rclone is moving right now."""
+
+    name: str
+    bytes_done: int
+    size: int
+    percentage: int
+    speed: float
+    eta_seconds: int | None
+
+
+@dataclass(frozen=True)
+class TransferStats:
+    """A periodic progress report, straight from rclone's own accounting.
+
+    Emitted on the interval given to `--stats` and carried in the JSON log as a
+    `stats` object. Verified against rclone 1.74.4 mid transfer:
+
+        "stats": {"bytes":125923328, "totalBytes":419430400, "speed":63067376.8,
+                  "eta":4, "elapsedTime":2.0, "errors":0,
+                  "transferring":[{"name":"big.bin","percentage":30,
+                                   "speed":63096110.7,"eta":4,...}]}
+
+    There is **no up/down split**: rclone reports one figure for the transfer.
+    Which direction that represents is a property of the job, not of the stats,
+    so the UI derives the label and this module does not invent one.
+    """
+
+    bytes_done: int = 0
+    total_bytes: int = 0
+    speed: float = 0.0
+    eta_seconds: int | None = None
+    elapsed_seconds: float = 0.0
+    errors: int = 0
+    checks: int = 0
+    total_checks: int = 0
+    transfers: int = 0
+    total_transfers: int = 0
+    transferring: tuple[FileProgress, ...] = ()
+
+    @property
+    def percentage(self) -> int:
+        if self.total_bytes <= 0:
+            return 0
+        return min(100, int(self.bytes_done * 100 / self.total_bytes))
+
+
+def _int(payload: dict[str, object], key: str, default: int = 0) -> int:
+    value = payload.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _float(payload: dict[str, object], key: str, default: float = 0.0) -> float:
+    value = payload.get(key)
+    return (
+        float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+    )
+
+
+def parse_stats(payload: dict[str, object]) -> TransferStats:
+    """Read one `stats` object. Unknown or missing fields fall back to zero.
+
+    Tolerant on purpose: this drives a progress display, and a stats shape that
+    gains a field in a later rclone must not break a running sync.
+    """
+    files: list[FileProgress] = []
+    raw_files = payload.get("transferring")
+    if isinstance(raw_files, list):
+        for entry in raw_files:
+            if not isinstance(entry, dict):
+                continue
+            eta = entry.get("eta")
+            files.append(
+                FileProgress(
+                    name=str(entry.get("name", "")),
+                    bytes_done=_int(entry, "bytes"),
+                    size=_int(entry, "size"),
+                    percentage=_int(entry, "percentage"),
+                    speed=_float(entry, "speed"),
+                    eta_seconds=eta if isinstance(eta, int) and not isinstance(eta, bool) else None,
+                )
+            )
+
+    eta = payload.get("eta")
+    return TransferStats(
+        bytes_done=_int(payload, "bytes"),
+        total_bytes=_int(payload, "totalBytes"),
+        speed=_float(payload, "speed"),
+        eta_seconds=eta if isinstance(eta, int) and not isinstance(eta, bool) else None,
+        elapsed_seconds=_float(payload, "elapsedTime"),
+        errors=_int(payload, "errors"),
+        checks=_int(payload, "checks"),
+        total_checks=_int(payload, "totalChecks"),
+        transfers=_int(payload, "transfers"),
+        total_transfers=_int(payload, "totalTransfers"),
+        transferring=tuple(files),
+    )

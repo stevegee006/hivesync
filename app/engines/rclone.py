@@ -130,6 +130,7 @@ def build_sync_command(
         *comparison_args(job),
         *filter_args(job),
         *performance_args(job),
+        *quiet_period_args(job),
     )
 
 
@@ -226,6 +227,22 @@ def performance_args(job: Job) -> list[str]:
     if job.bwlimit:
         args += ["--bwlimit", job.bwlimit]
     return args
+
+
+def quiet_period_args(job: Job) -> list[str]:
+    """Leave a file alone until it has stopped changing. Continuous mode only.
+
+    `--min-age` skips anything modified more recently than the given age, so a
+    file still being written is picked up on a later cycle instead of copied
+    half finished and copied again next time. Verified present in rclone 1.74.4.
+
+    Not applied to a scheduled or manual run: those happen when someone chose,
+    and silently skipping recent files there would be surprising rather than
+    protective.
+    """
+    if not job.continuous or job.quiet_period_seconds <= 0:
+        return []
+    return ["--min-age", f"{job.quiet_period_seconds}s"]
 
 
 def resolve_max_delete(pct: int, dest_file_count: int) -> int:

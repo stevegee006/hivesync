@@ -24,6 +24,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import __version__, binaries, crypto, csrf, filter_presets, security, web
@@ -35,8 +37,9 @@ from app.headers import SecurityHeadersMiddleware
 from app.jobs.planner import PlanRunner
 from app.jobs.runner import LiveRunner
 from app.jobs.scheduler import JobScheduler
+from app.jobs.watcher import ContinuousWatcher
 from app.logging_conf import configure_logging
-from app.models import SECRET_KEY_FINGERPRINT, Setting
+from app.models import SECRET_KEY_FINGERPRINT, JobRun, RunStatus, Setting, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,41 @@ def _check_key_fingerprint(app: FastAPI) -> None:
             )
 
 
+def _release_interrupted_runs(session: Session) -> None:
+    """Close out runs that a restart killed mid-flight.
+
+    A row left saying "running" describes a process that no longer exists, and
+    nothing else will ever finish it. The partial unique index then refuses a new
+    run for that job forever: a scheduled job silently records skip after skip,
+    and a continuous job stops looking altogether with nothing in the log to say
+    why. Found exactly that way, by restarting the container during a sync.
+
+    Recorded as failed rather than quietly deleted. Work may well have happened
+    on disk before the process died, and the next run's delete brake reads the
+    resulting state, so pretending it never ran would be a lie about the tree.
+    """
+    interrupted = list(
+        session.scalars(
+            select(JobRun).where(JobRun.status.in_([RunStatus.queued, RunStatus.running]))
+        )
+    )
+    if not interrupted:
+        return
+
+    for run in interrupted:
+        run.status = RunStatus.failed
+        run.finished_at = utcnow()
+        run.errors_count = max(run.errors_count, 1)
+        run.summary = {
+            "error": (
+                "This run was interrupted by a restart, so how much of it "
+                "completed is unknown. Check the destination, then run it again."
+            )
+        }
+    session.commit()
+    logger.warning("Released runs left behind by a restart", extra={"count": len(interrupted)})
+
+
 def run_startup_checks(app: FastAPI) -> None:
     """Validate persistent state before the server accepts a request.
 
@@ -78,6 +116,7 @@ def run_startup_checks(app: FastAPI) -> None:
     with session_scope(app.state.session_factory) as session:
         security.bootstrap_admin(session, settings)
         filter_presets.seed_builtin_presets(session)
+        _release_interrupted_runs(session)
 
 
 @asynccontextmanager
@@ -110,6 +149,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # jobstore, so restart survival comes from our own database. See
     # app/jobs/scheduler.py.
     app.state.scheduler.start()
+    app.state.watcher.start()
 
     logger.info(
         "HiveSync started",
@@ -124,6 +164,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        app.state.watcher.shutdown()
         app.state.scheduler.shutdown()
         app.state.live_runner.shutdown()
         app.state.plan_runner.shutdown()
@@ -169,6 +210,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Started in the lifespan, not here: create_app runs during tests that never
     # want a background thread firing real syncs.
     app.state.scheduler = JobScheduler(
+        app.state.session_factory, app.state.live_runner, settings=settings
+    )
+    # Continuous jobs are driven here rather than by the scheduler: their timing
+    # is a backoff computed from what the last cycle did, which a cron trigger
+    # cannot express. See app/jobs/watcher.py.
+    app.state.watcher = ContinuousWatcher(
         app.state.session_factory, app.state.live_runner, settings=settings
     )
 

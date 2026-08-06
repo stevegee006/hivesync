@@ -8,7 +8,7 @@ HiveSync implements no file transfer protocols of its own. It drives `rclone` (a
 optionally `lftp`) as subprocesses, adding scheduling, credential management, dry
 run previews, deletion archiving, and a UI.
 
-## Status: M8 complete
+## Status: M9 complete
 
 Working today, verified against the pinned rclone and live SFTP, FTP and SMB
 fixtures:
@@ -38,15 +38,26 @@ fixtures:
   limiting that survives a restart, proxy-asserted identity for authentik and
   similar, and an image built from digest-pinned bases with hash-verified
   dependencies.
+- **A live activity strip** on every page: current speed, the file in flight,
+  a chart over the last minute, ten minutes or hour, and session and lifetime
+  totals.
+- **Continuous mode**, which re-checks a pair of endpoints on a loop instead of a
+  schedule, backing off while nothing changes.
+- **A schedule builder**, so a weekly job is a few dropdowns rather than a cron
+  expression.
 
 Not built: the `lftp` engine. The binary is in the image and the option exists,
 but jobs that select it are refused. Whether segmented transfers are worth having
 is `SPEC.md` open question 1, still unanswered.
 
-**This is not a real time sync tool.** It is scheduled sync, plus manual runs.
-Resilio's continuous behaviour is not reproduced: a file saved now syncs at the
-next scheduled run, not a second later. If you need continuous replication, this
-is the wrong tool. See `SPEC.md` section 19.
+**Continuous mode is polling, not watching.** This matters, so it is stated
+plainly rather than buried: no endpoint HiveSync talks to can tell it that a file
+changed. Verified against the pinned rclone, `ChangeNotify` is false for local,
+SFTP, FTP and SMB alike. Continuous mode therefore re-lists both endpoints on an
+interval, backing off from that interval while nothing changes and returning to
+it the moment something does. A file saved now syncs on the next cycle, seconds
+to minutes later depending on how you set it, not instantly the way Resilio's
+agents manage between themselves.
 
 **Exposing it to the internet is still your risk to weigh.** M8 closed the
 specific gaps that made it unsafe: CSRF, login rate limiting, host key pinning,
@@ -264,6 +275,61 @@ the database so a restart does not clear a lockout.
 
 Everything else is configured from the Settings screen and stored in the
 database: notification target, retention, and log limits.
+
+
+## Continuous mode
+
+A job can watch instead of waiting for a schedule. Turn on **Watch continuously**
+in the job editor and set two intervals:
+
+| Setting | What it does |
+|---|---|
+| check every | the floor, used again straight after a cycle that moved something |
+| backing off to | the ceiling, approached by doubling while nothing changes |
+| ignore files changed in the last | a quiet period, passed to rclone as `--min-age` |
+
+The quiet period is the one worth understanding. Without it, a large file still
+being written gets copied half finished and copied again next cycle. With it, the
+file is left alone until it has stopped changing.
+
+**Each cycle lists both endpoints in full**, because nothing can tell HiveSync
+what changed. That is the cost that decides how short an interval is sensible: on
+a large NAS tree a cycle can take minutes, and no setting makes it faster than
+one listing. Time a dry run against your real tree before choosing.
+
+**A cycle that changes nothing records no run.** A sixty second loop would
+otherwise write 1,440 rows a day and bury the runs that matter. The job's *last
+checked* time on the dashboard is the proof it is still watching; the run history
+keeps only cycles that moved something or failed.
+
+Two combinations are refused rather than allowed to misbehave:
+
+- **Continuous plus bidirectional.** bisync compares both sides in full and keeps
+  its own state, so it is both the most expensive thing to loop and the hardest
+  to recover from.
+- **Continuous plus a schedule.** A job is one or the other.
+
+Continuous mode makes the delete brake and the archive load-bearing rather than
+precautionary: a deletion propagates on the next cycle rather than at 2am. If
+that matters for a given job, set deletion handling to archive rather than
+delete.
+
+## The activity strip
+
+Every page carries a strip along the bottom showing what is happening now:
+
+- **Up and down speed.** rclone reports one transfer speed, not a split, so the
+  direction is derived from the job: writing to a remote is up, pulling from one
+  to local storage is down, and local to local is neither. Derived rather than
+  measured, and labelled that way.
+- **A chart** over the last minute, ten minutes or hour, drawn from samples taken
+  every five seconds.
+- **Session** totals since the process started, and **lifetime** bytes from the
+  run history, which is the one figure that survives a restart.
+
+It polls one endpoint every two seconds while something is running and every
+fifteen when idle, so the whole page uses a single connection no matter how many
+jobs are active.
 
 ## Security
 

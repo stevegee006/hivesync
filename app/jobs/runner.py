@@ -47,7 +47,7 @@ from app.engines.rclone import (
 )
 from app.engines.rcloneconf import ALIAS_DEST, ALIAS_SOURCE, RemoteConfigError
 from app.jobs import archive
-from app.jobs.events import RunEvent, broker
+from app.jobs.events import RunEvent, activity, broker
 from app.models import (
     ChangeAction,
     ConnectionType,
@@ -145,9 +145,11 @@ class LiveRunner:
             # must not hold a write lock, and a failed notification must not
             # change what the run recorded. SPEC section 16.
             _notify(session, run, job)
+            _prune_quiet_cycle(session, run, job)
         finally:
             with self._lock:
                 self._active.pop(run_id, None)
+            activity.forget(run_id)
             broker.finish(run_id)
             session.close()
 
@@ -374,12 +376,12 @@ def _consume(running: process.StreamingProcess, run_id: int, log_path: Path) -> 
     with log_path.open("a", encoding="utf-8") as handle:
         for line in running.lines():
             handle.write(line + "\n")
-            _absorb(observed, line)
+            _absorb(observed, line, run_id)
             _emit(run_id, "line", line)
     return observed
 
 
-def _absorb(observed: parsers.DryRunLog, line: str) -> None:
+def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> None:
     """Fold one live JSON log line into the running totals."""
     stripped = line.strip()
     if not stripped.startswith("{"):
@@ -389,6 +391,30 @@ def _absorb(observed: parsers.DryRunLog, line: str) -> None:
     except ValueError:
         return
     if not isinstance(payload, dict):
+        return
+
+    # A periodic progress report rather than a per-file event. rclone emits one
+    # on the --stats interval; it drives the dashboard and is deliberately kept
+    # out of the line backlog, which exists for the log a person reads.
+    stats = payload.get("stats")
+    if isinstance(stats, dict):
+        parsed = parsers.parse_stats(stats)
+        observed.stats = stats
+        activity.record(run_id, parsed)
+        broker.publish(
+            run_id,
+            RunEvent(
+                kind="stats",
+                text="",
+                data={
+                    "bytes": parsed.bytes_done,
+                    "total_bytes": parsed.total_bytes,
+                    "speed": parsed.speed,
+                    "eta": parsed.eta_seconds,
+                    "percentage": parsed.percentage,
+                },
+            ),
+        )
         return
 
     obj = payload.get("object")
@@ -532,7 +558,7 @@ def _consume_bisync(
         for line in running.lines():
             handle.write(line + "\n")
             lines.append(line)
-            _absorb(observed, line)
+            _absorb(observed, line, run_id)
             _emit(run_id, "line", line)
     return observed, "\n".join(lines)
 
@@ -613,6 +639,26 @@ def _notify(session: Session, run: JobRun, job: Job) -> None:
         notify.send(preferences, payload)
     except Exception:
         logger.exception("Could not dispatch notification", extra={"run_id": run.id})
+
+
+def _prune_quiet_cycle(session: Session, run: JobRun, job: Job) -> None:
+    """Drop a continuous cycle that succeeded and moved nothing.
+
+    A sixty second loop is 1,440 runs a day. Keeping the ones that did nothing
+    buries the ones that did, and the run history exists to answer "what
+    happened to my files". A failure is always kept, including a refusal by the
+    delete brake: that is exactly the run someone goes looking for.
+
+    `last_checked_at` carries the proof of life instead, so the UI can still
+    distinguish "watching quietly" from "stopped".
+    """
+    if not job.continuous or run.status != RunStatus.success:
+        return
+    if run.files_transferred or run.files_deleted or run.errors_count:
+        return
+    session.delete(run)
+    job.last_checked_at = utcnow()
+    session.commit()
 
 
 def _fail(

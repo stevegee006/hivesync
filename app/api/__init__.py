@@ -10,7 +10,17 @@ looks and /api/metrics is not.
 
 from fastapi import APIRouter
 
-from app.api import auth, connections, credentials, health, jobs, presets, rclone, settings
+from app.api import (
+    activity,
+    auth,
+    connections,
+    credentials,
+    health,
+    jobs,
+    presets,
+    rclone,
+    settings,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -21,5 +31,6 @@ api_router.include_router(rclone.router)
 api_router.include_router(jobs.router)
 api_router.include_router(presets.router)
 api_router.include_router(settings.router)
+api_router.include_router(activity.router)
 
 __all__ = ["api_router"]

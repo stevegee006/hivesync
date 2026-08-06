@@ -49,6 +49,10 @@ class JobBase(BaseModel):
     archive_base: str | None = None
     archive_layout: ArchiveLayout = ArchiveLayout.timestamped_dir
     archive_retention_days: int | None = Field(default=None, ge=1)
+    continuous: bool = False
+    continuous_interval_seconds: int = Field(default=60, ge=5, le=86400)
+    continuous_idle_interval_seconds: int = Field(default=900, ge=5, le=86400)
+    quiet_period_seconds: int = Field(default=30, ge=0, le=3600)
 
     filters: JobFilters = Field(default_factory=JobFilters)
     filter_preset_ids: list[int] = Field(default_factory=list)
@@ -90,6 +94,34 @@ class JobBase(BaseModel):
             raise ValueError(
                 "Bidirectional sync handles deletions itself, so the extra files "
                 "setting must be 'leave them alone'. The delete brake still applies."
+            )
+
+        if self.continuous and self.direction == Direction.bidirectional:
+            # bisync lists both sides and carries workdir state, so it is both
+            # the most expensive thing to run on a loop and the one where a
+            # mistake is hardest to undo.
+            raise ValueError(
+                "Continuous mode is not available for bidirectional jobs. A "
+                "bidirectional run compares both sides in full and keeps its own "
+                "state, so running it on a loop is expensive and harder to "
+                "recover from. Use a schedule, or make this a one way job."
+            )
+
+        if self.continuous and (self.schedule_cron or "").strip():
+            # Two opinions about when to run is one too many.
+            raise ValueError(
+                "A job is either continuous or scheduled, not both. Clear the "
+                "schedule to watch continuously, or turn continuous mode off to "
+                "keep the schedule."
+            )
+
+        if self.continuous and self.continuous_idle_interval_seconds < (
+            self.continuous_interval_seconds
+        ):
+            raise ValueError(
+                "The idle interval is how far continuous mode backs off when "
+                "nothing is changing, so it cannot be shorter than the interval "
+                "it backs off from."
             )
 
         if self.engine == Engine.lftp and self.delete_mode == DeleteMode.archive:
@@ -163,6 +195,11 @@ class JobRead(BaseModel):
     timeout_seconds: int | None
     notify_on: NotifyOn
     bisync_initialized: bool
+    continuous: bool = False
+    continuous_interval_seconds: int = 60
+    continuous_idle_interval_seconds: int = 900
+    quiet_period_seconds: int = 30
+    last_checked_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

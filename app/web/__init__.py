@@ -776,6 +776,13 @@ def _job_payload(form: dict[str, str], preset_ids: list[int]) -> JobCreate:
         conflict_resolve=ConflictResolve(form.get("conflict_resolve") or "newer"),
         check_access=form.get("check_access") == "true",
         notify_on=NotifyOn(form.get("notify_on") or "failure"),
+        continuous=form.get("continuous") == "true",
+        continuous_interval_seconds=number("continuous_interval_seconds") or 60,
+        continuous_idle_interval_seconds=number("continuous_idle_interval_seconds") or 900,
+        # A quiet period of zero is meaningful, so `or` would be wrong here.
+        quiet_period_seconds=(
+            value if (value := number("quiet_period_seconds")) is not None else 30
+        ),
         max_delete_pct=number("max_delete_pct") or 0,
         transfers=number("transfers"),
         checkers=number("checkers"),

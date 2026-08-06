@@ -236,3 +236,63 @@ def test_the_form_offers_the_notification_control(
 
     assert 'name="notify_on"' in page
     assert 'value="never" selected' in page
+
+
+# --------------------------------------------------------------------------
+# The schedule builder
+# --------------------------------------------------------------------------
+
+
+def test_the_builder_is_offered_alongside_the_raw_expression(
+    authed_client: TestClient, settings: Settings
+) -> None:
+    """A builder cannot express everything cron can, so the field stays."""
+    source_id, dest_id = _connections(settings)
+    job_id = _create(authed_client, _form(source_id, dest_id))
+
+    page = authed_client.get(f"/jobs/{job_id}").text
+
+    assert 'id="schedule-builder"' in page
+    assert 'data-cron="mode"' in page
+    assert 'name="schedule_cron"' in page
+
+
+def test_a_schedule_typed_by_hand_still_saves(
+    authed_client: TestClient, settings: Settings
+) -> None:
+    """The builder writes the field; it must not become the only way in."""
+    source_id, dest_id = _connections(settings)
+    job_id = _create(authed_client, _form(source_id, dest_id, schedule_cron="15 2,14 * * 1-5"))
+
+    job = _saved(settings, job_id)
+    assert job.schedule_cron == "15 2,14 * * 1-5"
+
+    # And it comes back untouched rather than being rewritten into something the
+    # builder can represent.
+    assert "15 2,14 * * 1-5" in authed_client.get(f"/jobs/{job_id}").text
+
+
+def test_a_job_can_be_continuous_instead_of_scheduled(
+    authed_client: TestClient, settings: Settings
+) -> None:
+    source_id, dest_id = _connections(settings)
+    job_id = _create(authed_client, _form(source_id, dest_id, continuous="true", schedule_cron=""))
+
+    job = _saved(settings, job_id)
+    assert job.continuous is True
+    assert not job.schedule_cron
+
+
+def test_continuous_plus_a_schedule_is_refused_by_the_form(
+    authed_client: TestClient, settings: Settings
+) -> None:
+    source_id, dest_id = _connections(settings)
+
+    response = authed_client.post(
+        "/jobs",
+        data=_form(source_id, dest_id, continuous="true", schedule_cron="0 2 * * *"),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert "either continuous or scheduled" in response.text

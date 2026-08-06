@@ -62,6 +62,27 @@
 
     <dl class="mt-3 grid grid-cols-2 gap-2 text-xs">
       <div>
+        <dt class="text-slate-500">Mode</dt>
+        <dd class="mt-0.5 text-slate-300">
+          {% if job.continuous %}
+          <span class="text-sky-400">watching</span>
+          <span class="text-slate-500">
+            every {{ job.continuous_interval_seconds }}s
+          </span>
+          {% elif job.schedule_cron %}
+          <span class="font-mono">{{ job.schedule_cron }}</span>
+          {% else %}
+          <span class="text-slate-600">on demand</span>
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt class="text-slate-500">Last checked</dt>
+        <dd class="mt-0.5 text-slate-300">
+          {% if job.continuous %}{{ job.last_checked_at | localtime }}{% else %}&mdash;{% endif %}
+        </dd>
+      </div>
+      <div>
         <dt class="text-slate-500">Last run</dt>
         <dd class="mt-0.5">
           {% if card.last_run %}
