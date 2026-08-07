@@ -262,13 +262,44 @@ def test_clearing_the_timezone_falls_back_to_the_environment(
         assert preferences_store.load(session).display_timezone == ""
 
 
-def test_the_home_link_is_on_every_page(authed_client: TestClient) -> None:
-    """The brand has always linked home, but nothing said so."""
-    for path in ("/", "/jobs", "/connections", "/settings"):
-        page = authed_client.get(path).text
-        assert ">\n          Home\n        </a>" in page or ">Home<" in page.replace(
-            " ", ""
-        ).replace("\n", ""), f"no Home link on {path}"
+def test_every_navigation_icon_has_an_accessible_name(authed_client: TestClient) -> None:
+    """The nav is glyphs now. Without a name each one is a guessing game for
+    anyone using a screen reader and a memory test for everyone else."""
+    page = authed_client.get("/").text
+
+    for label, href in [
+        ("Home", "/"),
+        ("Jobs", "/jobs"),
+        ("Connections", "/connections"),
+        ("Credentials", "/credentials"),
+        ("Filters", "/filter-presets"),
+        ("Settings", "/settings"),
+    ]:
+        assert f'href="{href}"' in page, f"no link to {href}"
+        assert f'aria-label="{label}"' in page, f"the {label} icon has no accessible name"
+        assert f'title="{label}"' in page, f"the {label} icon has no tooltip"
+
+
+def test_the_account_menu_works_without_javascript(authed_client: TestClient) -> None:
+    """It holds sign out and password change. A scripted dropdown would put both
+    behind an asset that base.html promises the page works without."""
+    page = authed_client.get("/").text
+
+    assert "<details" in page
+    assert 'action="/api/auth/logout"' in page
+    assert "/account/password" in page
+    # Not Alpine: x-show would leave the menu unopenable if the script failed.
+    menu = page[page.index("<details") : page.index("</details>")]
+    assert "x-show" not in menu and "x-data" not in menu
+
+
+def test_the_disclosure_triangle_is_hidden() -> None:
+    """Both rules are needed. Chrome and Safari use the pseudo-element, Firefox
+    uses list-style, and half a fix leaves a stray triangle by the icon."""
+    css = Path("app/web/static/css/tailwind.src.css").read_text(encoding="utf-8")
+
+    assert "summary::-webkit-details-marker" in css
+    assert "list-style: none" in css
 
 
 def _stamp_a_run(settings, finished: datetime) -> int:
@@ -293,3 +324,96 @@ def _stamp_a_run(settings, finished: datetime) -> int:
     session.add(run)
     session.commit()
     return run.id
+
+
+# --------------------------------------------------------------------------
+# Mobile layout
+#
+# Verified by rendering every authenticated page at 375px in a real browser.
+# These pin the rules that verification established, because the next template
+# added will not be looked at on a phone.
+# --------------------------------------------------------------------------
+
+TEMPLATE_DIR = Path("app/web/templates")
+
+
+def test_the_page_declares_a_viewport() -> None:
+    """Without it a phone renders at 980px and scales down, so every fix below
+    is invisible and the whole UI is a zoomed-out desktop page."""
+    base = (TEMPLATE_DIR / "base.html").read_text(encoding="utf-8")
+
+    assert 'name="viewport"' in base
+    assert "width=device-width" in base
+
+
+def test_every_table_can_scroll_sideways() -> None:
+    """A table of connections or changes cannot fit 375px and must not be what
+    makes the whole page scroll horizontally. Each one lives in its own
+    overflow-x-auto box instead."""
+    for path in TEMPLATE_DIR.rglob("*.html"):
+        body = path.read_text(encoding="utf-8")
+        tables = body.count("<table")
+        if not tables:
+            continue
+        wrappers = body.count("overflow-x-auto")
+        assert wrappers >= tables, (
+            f"{path.name} has {tables} table(s) and {wrappers} scroll wrapper(s). "
+            "A table without one makes the entire page scroll sideways on a phone."
+        )
+
+
+def test_the_activity_strip_clears_the_content_at_every_width() -> None:
+    """The strip is position-fixed, so this padding is the only thing keeping it
+    off the bottom of the page. It was a single value while the strip was three
+    times taller on a phone than on a desktop, so it covered the last job card
+    and its buttons."""
+    base = (TEMPLATE_DIR / "base.html").read_text(encoding="utf-8")
+
+    main_tag = re.search(r"<main[^>]*>", base)
+    assert main_tag, "no <main> in base.html"
+    classes = main_tag.group(0)
+    assert "pb-28" in classes and "sm:pb-40" in classes, (
+        f"the clearance below the fixed strip is no longer responsive: {classes}"
+    )
+
+
+def test_the_strips_fixed_columns_are_hidden_when_they_do_not_fit() -> None:
+    """Three 176px columns plus a chart need about 900px. Below that the chart
+    was crushed to nothing and the range buttons collided with the run count."""
+    base = (TEMPLATE_DIR / "base.html").read_text(encoding="utf-8")
+
+    fixed_columns = re.findall(r'class="([^"]*\bw-44\b[^"]*)"', base)
+    assert fixed_columns, "the strip no longer has fixed columns; check this test"
+    for classes in fixed_columns:
+        assert "hidden" in classes or "sm:w-44" in classes, (
+            f"a 176px column with no small-screen handling: {classes}"
+        )
+
+
+def test_the_run_page_reads_keys_that_a_live_run_actually_writes() -> None:
+    """The reported bug, and the shape of it.
+
+    The summary cards read `new`, `updated` and `unchanged`. Only a dry run
+    wrote those; a live run wrote `planned_new`, `transferred` and no
+    `unchanged` at all. So every live run showed New 0, Updated 0 and Unchanged
+    0 however many files it moved, and nothing failed, because a missing key in
+    `summary.get(key, 0)` is indistinguishable from a genuine zero.
+    """
+    template = (TEMPLATE_DIR / "runs" / "detail.html").read_text(encoding="utf-8")
+    runner = Path("app/jobs/runner.py").read_text(encoding="utf-8")
+
+    read = set(re.findall(r"summary\.get\(\s*'([a-z_]+)'", template))
+    assert {"new", "updated", "unchanged", "bytes"} <= read, read
+
+    # The live summary literal, up to its closing brace.
+    start = runner.index("run.summary = {\n        # The same keys a dry run writes")
+    written = set(re.findall(r'"([a-z_]+)":', runner[start : runner.index("\n    }", start)]))
+
+    missing = {key for key in read if key not in written}
+    # `warnings` and `errors` are lists rather than counts, and `rows_omitted`
+    # is set by the page's own query, so they are not expected here.
+    missing -= {"rows_omitted"}
+    assert not missing, (
+        f"the run page reads {sorted(missing)} which no live run writes, so they "
+        "will silently render as zero"
+    )

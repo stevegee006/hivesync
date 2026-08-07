@@ -28,41 +28,87 @@
 
   {% block chrome %}
   <header class="border-b border-slate-800 bg-slate-900">
-    <div class="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
+    {# Stacked on a phone. Side by side with a wrapping nav, the brand ended up
+       vertically centred against three rows of links and read as one of them. #}
+    <div class="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <a href="/" class="flex items-baseline gap-2">
         <span class="text-lg font-semibold tracking-tight text-slate-100">HiveSync</span>
         <span class="font-mono text-xs text-slate-500">{{ app_version }}</span>
       </a>
-      <nav class="flex flex-wrap items-center gap-4 text-sm text-slate-400">
+      {# Icons rather than eight words. Every one carries a title for the
+         desktop tooltip and an aria-label, because an unlabelled glyph is a
+         guessing game for anyone using a screen reader and a memory test for
+         everyone else. #}
+      {# The Jobs glyph is a clipboard with a tick, not the circular arrows it
+         started as: those read as "reload this page", which is the one thing
+         the link does not do. Deliberately not plain lines either, which is
+         what the Settings sliders are. #}
+      {% set destinations = [
+        ('Home', '/',
+         '<path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V20a1 1 0 0 0 1 1H9v-6h6v6h2.5a1 1 0 0 0 1-1V9.5"/>'),
+        ('Jobs', '/jobs',
+         '<path d="M9 4.5h6v3H9z"/><path d="M9 6H7a1.5 1.5 0 0 0-1.5 1.5v12A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5v-12A1.5 1.5 0 0 0 17 6h-2"/><path d="m9 13 2 2 4-4"/>'),
+        ('Connections', '/connections',
+         '<path d="m9.5 14.5 5-5"/><path d="M11 6.5 12.8 4.7a4.2 4.2 0 0 1 6 6L17 12.5"/><path d="m13 17.5-1.8 1.8a4.2 4.2 0 0 1-6-6L7 11.5"/>'),
+        ('Credentials', '/credentials',
+         '<circle cx="8.5" cy="14.5" r="4"/><path d="m11.5 11.5 8-8"/><path d="m17 6 2 2"/><path d="m19.5 3.5 2 2"/>'),
+        ('Filters', '/filter-presets',
+         '<path d="M3.5 5h17l-6.5 7.5V19l-4 2v-8.5z"/>'),
+        ('Settings', '/settings',
+         '<path d="M5 8h14"/><path d="M5 16h14"/><circle cx="9" cy="8" r="2"/><circle cx="15" cy="16" r="2"/>'),
+      ] %}
+      <nav class="flex items-center gap-0.5 text-slate-300">
         {% if user %}
         {# Every screen SPEC section 13 lists, reachable from every screen. Until
            M7 the pages existed with nothing linking to them. #}
-        {% for label, href in [
-          ('Home', '/'),
-          ('Jobs', '/jobs'),
-          ('Connections', '/connections'),
-          ('Credentials', '/credentials'),
-          ('Filters', '/filter-presets'),
-          ('Settings', '/settings'),
-        ] %}
-        <a href="{{ href }}"
-           class="hover:text-slate-200 {% if nav_active == href %}text-slate-100{% endif %}">
-          {{ label }}
+        {% for label, href, glyph in destinations %}
+        <a href="{{ href }}" title="{{ label }}" aria-label="{{ label }}"
+           {% if nav_active == href %}aria-current="page"{% endif %}
+           class="rounded p-2 hover:bg-slate-800 hover:text-slate-100
+                  {% if nav_active == href %}bg-slate-800 text-slate-100{% endif %}">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true">{{ glyph | safe }}</svg>
         </a>
         {% endfor %}
-        <span class="font-mono text-xs text-slate-500">{{ user.username }}</span>
-        <a href="/account/password" class="hover:text-slate-200">Password</a>
-        <form method="post" action="/api/auth/logout">
-          {{ csrf_input() }}
-          <button type="submit" class="hover:text-slate-200">Sign out</button>
-        </form>
+
+        {# A native disclosure, not a scripted dropdown. base.html promises every
+           page works without JavaScript, and a menu that needs it to open would
+           put sign out and password change behind a script that might not load.
+           The script below only adds close-on-outside-click. #}
+        <details class="relative ml-1" data-menu>
+          <summary title="{{ user.username }}" aria-label="Account: {{ user.username }}"
+                   class="flex cursor-pointer items-center gap-1.5 rounded p-2 hover:bg-slate-800 hover:text-slate-100">
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true">
+              <circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>
+            </svg>
+          </summary>
+          <div class="absolute right-0 z-20 mt-1 w-52 rounded border border-slate-700 bg-slate-900 py-1 shadow-lg">
+            <p class="truncate border-b border-slate-800 px-3 py-2 font-mono text-xs text-slate-500">
+              {{ user.username }}
+            </p>
+            <a href="/account/password"
+               class="block px-3 py-2 text-sm hover:bg-slate-800 hover:text-slate-100">
+              Change password
+            </a>
+            <form method="post" action="/api/auth/logout">
+              {{ csrf_input() }}
+              <button type="submit"
+                      class="block w-full px-3 py-2 text-left text-sm hover:bg-slate-800 hover:text-slate-100">
+                Sign out
+              </button>
+            </form>
+          </div>
+        </details>
         {% endif %}
       </nav>
     </div>
   </header>
   {% endblock %}
 
-  <main class="mx-auto max-w-7xl px-4 py-8 pb-40">
+  <main class="mx-auto max-w-7xl px-4 py-8 pb-28 sm:pb-40">
     {% block content %}{% endblock %}
   </main>
 
@@ -74,18 +120,23 @@
        class="fixed inset-x-0 bottom-0 border-t border-slate-800 bg-slate-950/95 backdrop-blur">
     <div class="mx-auto flex max-w-7xl flex-wrap items-stretch gap-4 px-4 py-2 text-xs">
 
-      <div class="w-44 shrink-0 space-y-1">
-        <p class="uppercase tracking-wide text-slate-500">Network</p>
+      <div class="w-full shrink-0 space-y-1 sm:w-44">
+        <p class="hidden uppercase tracking-wide text-slate-500 sm:block">Network</p>
         {# The total is always shown. Up and down are derived from the job, so
            they can legitimately be zero while a transfer is running, and a
-           panel reading 0 B/s during a sync reads as broken. #}
-        <p class="font-mono text-slate-200" data-activity="total">0 B/s</p>
-        <p class="text-emerald-400">
-          &#9650; <span data-activity="up">0 B/s</span>
-        </p>
-        <p class="text-sky-400">
-          &#9660; <span data-activity="down">0 B/s</span>
-        </p>
+           panel reading 0 B/s during a sync reads as broken.
+
+           One line on a phone, stacked from `sm` up. Three stacked lines here
+           cost a third of the screen for figures that fit side by side. #}
+        <div class="flex items-baseline gap-3 sm:block sm:space-y-1">
+          <p class="font-mono text-slate-200" data-activity="total">0 B/s</p>
+          <p class="text-emerald-400">
+            &#9650; <span data-activity="up">0 B/s</span>
+          </p>
+          <p class="text-sky-400">
+            &#9660; <span data-activity="down">0 B/s</span>
+          </p>
+        </div>
       </div>
 
       <div class="min-w-0 flex-1">
@@ -93,7 +144,7 @@
           <span class="uppercase tracking-wide text-slate-500">
             <span data-activity="running-count">idle</span>
           </span>
-          <span class="space-x-2 font-mono text-slate-600">
+          <span class="hidden space-x-2 font-mono text-slate-600 sm:inline">
             {% for label in ['1m', '10m', '1h'] %}
             <button type="button" data-window="{{ label }}"
                     class="hover:text-slate-300">{{ label }}</button>
@@ -103,14 +154,14 @@
         {# Drawn as a plain SVG polyline. No chart library, nothing from a CDN,
            consistent with everything else being vendored. #}
         <svg viewBox="0 0 600 60" preserveAspectRatio="none"
-             class="mt-1 h-14 w-full rounded bg-slate-900/60">
+             class="mt-1 hidden h-14 w-full rounded bg-slate-900/60 sm:block">
           <polyline data-activity="chart" fill="none" stroke="currentColor"
                     class="text-emerald-500" stroke-width="1.5" points="" />
         </svg>
         <p class="mt-0.5 truncate text-slate-500" data-activity="current"></p>
       </div>
 
-      <div class="w-44 shrink-0 space-y-1 border-l border-slate-800 pl-4">
+      <div class="hidden w-44 shrink-0 space-y-1 border-l border-slate-800 pl-4 lg:block">
         <p class="flex items-center justify-between uppercase tracking-wide text-slate-500">
           Session
           {# Explicit, like Resilio's. Not automatic on idle: a sync that
@@ -127,7 +178,7 @@
         </p>
       </div>
 
-      <div class="w-44 shrink-0 space-y-1 border-l border-slate-800 pl-4">
+      <div class="hidden w-44 shrink-0 space-y-1 border-l border-slate-800 pl-4 lg:block">
         <p class="uppercase tracking-wide text-slate-500">Lifetime</p>
         <p class="text-slate-300">
           <span class="font-mono" data-activity="lifetime">0 B</span>
@@ -237,5 +288,19 @@
     <span class="px-2">/</span>
     <span class="font-mono">lftp {{ lftp_version or 'unavailable' }}</span>
   </footer>
+  <script>
+    // Close the account menu when the page is clicked elsewhere, or on Escape.
+    // The menu works without this; it just needs a second click on the icon.
+    (function () {
+      var menu = document.querySelector("details[data-menu]");
+      if (!menu) return;
+      document.addEventListener("click", function (event) {
+        if (!menu.contains(event.target)) menu.removeAttribute("open");
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") menu.removeAttribute("open");
+      });
+    })();
+  </script>
 </body>
 </html>

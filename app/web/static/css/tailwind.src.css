@@ -18,3 +18,14 @@
   /* Paths are shown in monospace throughout the UI, per SPEC section 13. */
   --font-mono: ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
+
+/* The account menu is a native <details>, so it works with no JavaScript. The
+   default disclosure triangle would sit beside the icon and look like a second
+   control. Both rules are needed: Safari and Chrome use the pseudo-element,
+   Firefox uses list-style. */
+summary {
+  list-style: none;
+}
+summary::-webkit-details-marker {
+  display: none;
+}

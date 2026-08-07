@@ -1,6 +1,6 @@
 {# Directory picker, driven by `rclone lsf`. Paths that try to climb above the
    base path are refused server side rather than normalised away. #}
-<div class="rounded border border-slate-800 bg-slate-900/50">
+<div class="rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40">
   <div class="flex items-center justify-between border-b border-slate-800 px-4 py-2">
     <p class="font-mono text-xs text-slate-400">
       {{ connection.name }}:{{ browse.path or '' }}

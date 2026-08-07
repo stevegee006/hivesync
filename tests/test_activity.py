@@ -602,3 +602,42 @@ def test_a_page_opened_mid_transfer_gets_the_current_progress() -> None:
     # The latest, not every one of them: superseded progress is not history.
     assert [event.kind for event in seen] == ["line", "stats"]
     assert seen[-1].data == {"percentage": 70}
+
+
+# --------------------------------------------------------------------------
+# What a live run reports
+# --------------------------------------------------------------------------
+
+# Verified against rclone 1.74.4, which is the only place the two can be told
+# apart: a dry run reports skipped:"copy" for both.
+LIVE_COPY_LINES = {
+    "new": '{"level":"info","msg":"Copied (new)","size":10,"object":"new.txt"}',
+    "replaced": (
+        '{"level":"info","msg":"Copied (replaced existing)","size":20,"object":"old.txt"}'
+    ),
+    "big": '{"level":"info","msg":"Multi-thread Copied (new)","size":3033782870,"object":"b.mkv"}',
+}
+
+
+def test_a_live_run_can_tell_a_new_file_from_an_updated_one() -> None:
+    """The run page showed New 0 and Updated 0 on every live run, however many
+    files it copied, because nothing recorded which was which."""
+    observed = _absorbed(*LIVE_COPY_LINES.values())
+
+    assert [op.path for op in observed.created] == ["new.txt", "b.mkv"]
+    assert [op.path for op in observed.replacements] == ["old.txt"]
+    # And they are still all copies.
+    assert len(observed.copies) == 3
+
+
+def test_a_dry_run_copy_claims_neither() -> None:
+    """A dry run reports skipped:"copy" for both, so the planner's presence pass
+    is what tells them apart. Guessing here would be worse than not knowing."""
+    from app.engines import parsers as p
+
+    operation = p.PlannedOperation(path="a.txt", operation=p.SKIPPED_COPY)
+
+    assert operation.replaced is None
+    log = p.DryRunLog(operations=[operation])
+    assert log.created == []
+    assert log.replacements == []

@@ -55,6 +55,12 @@ class PlannedOperation:
     path: str
     operation: str  # SKIPPED_COPY or SKIPPED_DELETE
     size: int | None = None
+    # Only a live run can tell these apart, and only from the message: verified
+    # against rclone 1.74.4, a copy logs "Copied (new)" or "Copied (replaced
+    # existing)". A dry run reports `skipped: "copy"` for both, which is why the
+    # planner needs a separate presence pass to know which is which. None means
+    # "not known", which is the dry run case rather than a third state.
+    replaced: bool | None = None
 
 
 @dataclass
@@ -72,6 +78,16 @@ class DryRunLog:
     @property
     def copies(self) -> list[PlannedOperation]:
         return [op for op in self.operations if op.operation == SKIPPED_COPY]
+
+    @property
+    def created(self) -> list[PlannedOperation]:
+        """Copies that made a file that was not there before."""
+        return [op for op in self.copies if op.replaced is False]
+
+    @property
+    def replacements(self) -> list[PlannedOperation]:
+        """Copies over a file that already existed."""
+        return [op for op in self.copies if op.replaced is True]
 
     @property
     def deletes(self) -> list[PlannedOperation]:

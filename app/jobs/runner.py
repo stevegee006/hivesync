@@ -462,8 +462,18 @@ def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> bool:
         # transfer. It was matched before by startswith("Updated"), which
         # counted a modtime-only touch as a transferred file.
         if "Copied" in message:
+            # Verified against 1.74.4: "Copied (new)" or "Copied (replaced
+            # existing)", and "Multi-thread Copied (new)" for a file over the
+            # cutoff. This is the only place the two can be told apart, so a
+            # live run that does not record it here reports every transfer as
+            # neither new nor updated.
             observed.operations.append(
-                parsers.PlannedOperation(path=obj, operation=parsers.SKIPPED_COPY, size=size_value)
+                parsers.PlannedOperation(
+                    path=obj,
+                    operation=parsers.SKIPPED_COPY,
+                    size=size_value,
+                    replaced="(new)" not in message,
+                )
             )
         elif message.startswith("Deleted"):
             observed.operations.append(
@@ -565,6 +575,17 @@ def _record(
     run.errors_count = len(observed.errors)
     run.log_path = str(log_path)
     run.summary = {
+        # The same keys a dry run writes, so one screen can read either. Without
+        # these the run page fell back to zero for New, Updated and Unchanged on
+        # every live run, including ones that copied thousands of files, because
+        # it was reading dry run keys that a live run never wrote.
+        "new": len(observed.created),
+        "updated": len(observed.replacements),
+        # From the pre-flight plan. A live run never sees the files it did not
+        # touch, so this is the only source for it, and it is the same number
+        # the dry run of the same job reports.
+        "unchanged": plan.unchanged_count,
+        "bytes": run.bytes_transferred,
         "planned_new": plan.new_count,
         "planned_updated": plan.updated_count,
         "planned_deleted": plan.deleted_count,

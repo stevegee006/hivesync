@@ -12,7 +12,7 @@
 {% include "partials/_flash.html" %}
 
 {% if connections | length < 2 %}
-<p class="mt-6 rounded border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
+<p class="mt-6 rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-6 text-sm text-slate-400">
   A job pairs two connections, so at least two are needed.
   <a href="/connections/new" class="underline">Add one</a>.
 </p>
@@ -102,7 +102,7 @@
         </p>
         {% endif %}
 
-        <div x-show="direction === 'bidirectional'" x-cloak class="mt-4 space-y-4 rounded border border-slate-800 bg-slate-900/50 p-4">
+        <div x-show="direction === 'bidirectional'" x-cloak class="mt-4 space-y-4 rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 p-4">
           <div>
             <label for="conflict_resolve" class="block text-sm text-slate-400">When both sides changed</label>
             <select id="conflict_resolve" name="conflict_resolve"
@@ -194,7 +194,7 @@
         <p class="mt-1 text-xs text-amber-400" x-show="mode === 'archive'">{{ compat.archive.warning }}</p>
         {% endif %}
 
-        <div x-show="mode === 'archive'" x-cloak class="mt-4 space-y-4 rounded border border-slate-800 bg-slate-900/50 p-4">
+        <div x-show="mode === 'archive'" x-cloak class="mt-4 space-y-4 rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 p-4">
           <div>
             <label for="archive_base" class="block text-sm text-slate-400">Archive location</label>
             <input id="archive_base" name="archive_base"
@@ -364,7 +364,7 @@
         {% if not schedule_preview.valid %}
         <p class="mt-2 text-xs text-red-300">{{ schedule_preview.error }}</p>
         {% elif schedule_preview.fire_times %}
-        <div class="mt-2 rounded border border-slate-800 bg-slate-900/50 px-3 py-2">
+        <div class="mt-2 rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-3 py-2">
           <p class="text-xs uppercase tracking-wide text-slate-500">Next five runs</p>
           <ul class="mt-1 space-y-0.5">
             {% for moment in schedule_preview.formatted %}
@@ -547,7 +547,7 @@
 {% if job %}
 {# The Review summary from SPEC section 13, rendered from the saved job so it
    describes what will happen rather than what someone meant to type. #}
-<div class="mt-8 rounded border border-slate-800 bg-slate-900/50 px-4 py-3">
+<div class="mt-8 rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-3">
   <p class="text-xs uppercase tracking-wide text-slate-500">What this job does</p>
   <p class="mt-2 text-sm text-slate-200">{{ description }}</p>
 </div>
