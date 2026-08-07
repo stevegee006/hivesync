@@ -36,6 +36,9 @@
           <option value="webhook" {% if preferences.notify_target == 'webhook' %}selected{% endif %}>
             a webhook, as JSON
           </option>
+          <option value="discord" {% if preferences.notify_target == 'discord' %}selected{% endif %}>
+            Discord
+          </option>
           <option value="ntfy" {% if preferences.notify_target == 'ntfy' %}selected{% endif %}>
             ntfy
           </option>
@@ -57,8 +60,11 @@
         </p>
       </div>
 
-      <div x-show="target === 'webhook'" x-cloak>
-        <label for="notify_webhook_url" class="block text-sm text-slate-400">Webhook URL</label>
+      <div x-show="target === 'webhook' || target === 'discord'" x-cloak>
+        <label for="notify_webhook_url" class="block text-sm text-slate-400">
+          <span x-show="target === 'discord'">Discord webhook URL</span>
+          <span x-show="target !== 'discord'">Webhook URL</span>
+        </label>
         <input id="notify_webhook_url" name="notify_webhook_url" type="url"
                placeholder="{% if webhook_configured %}stored, leave blank to keep it{% else %}https://example.invalid/hook{% endif %}"
                class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
@@ -72,6 +78,14 @@
           {% else %}
           No URL is stored yet.
           {% endif %}
+        </p>
+        {# The reported failure: a Discord URL with the plain webhook target
+           returns a bare HTTP 400, because Discord requires its own body shape
+           rather than accepting arbitrary JSON. #}
+        <p class="mt-1 text-xs text-slate-500" x-show="target === 'discord'" x-cloak>
+          From Server settings, Integrations, Webhooks, then Copy webhook URL.
+          Choose Discord above rather than the plain webhook: Discord rejects any
+          body that is not in its own format, with an unexplained HTTP 400.
         </p>
         {% if webhook_configured %}
         <label class="mt-2 flex items-center gap-2 text-xs text-slate-400">
@@ -216,7 +230,7 @@
 {# Separate forms: a test send and a maintenance run are actions, not settings,
    and neither should be able to save a half-filled settings form. #}
 <section class="mt-8 border-t border-slate-800 pt-6">
-  <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Check it works</h2>
+  <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Test notifications</h2>
   <form method="post" action="/settings/test-notification" class="mt-3">
     {{ csrf_input() }}
     <button type="submit" class="rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800">

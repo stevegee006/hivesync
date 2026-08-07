@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}HiveSync{% endblock %}</title>
+  {# An SVG favicon, which every browser this runs in supports. A tab with the
+     default globe on it is indistinguishable from every other tab. #}
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
   <link rel="stylesheet" href="/static/css/app.css">
   {# Vendored, not loaded from a CDN. A sync tool for a LAN NAS should work with
      no outbound internet access. Both are optional: every page here functions
@@ -31,10 +35,47 @@
     {# Stacked on a phone. Side by side with a wrapping nav, the brand ended up
        vertically centred against three rows of links and read as one of them. #}
     <div class="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-      <a href="/" class="flex items-baseline gap-2">
-        <span class="text-lg font-semibold tracking-tight text-slate-100">HiveSync</span>
-        <span class="font-mono text-xs text-slate-500">{{ app_version }}</span>
-      </a>
+      <div class="flex items-center gap-1.5">
+        <a href="/" class="flex items-center gap-2">
+          {# The same file the favicon uses, so the tab and the header can never
+             drift apart. alt is empty on purpose: the wordmark beside it already
+             says HiveSync, and a screen reader announcing it twice is noise. #}
+          <img src="/static/icon.svg" alt="" width="24" height="24" class="h-6 w-6">
+          <span class="text-lg font-semibold tracking-tight text-slate-100">HiveSync</span>
+          <span class="font-mono text-xs text-slate-500">{{ app_version }}</span>
+        </a>
+        {# The engine versions used to be a row of cards on the dashboard and a
+           footer on every page, saying the same thing twice. They are worth
+           knowing and not worth a permanent third of the screen. A native
+           <details> again, so it opens with no JavaScript. #}
+        <details class="relative" data-menu data-about>
+          <summary title="Versions and health" aria-label="Versions and health"
+                   class="flex cursor-pointer items-center rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true">
+              <circle cx="12" cy="12" r="9"/><path d="M12 11.5v4.5"/><path d="M12 7.75h.01"/>
+            </svg>
+          </summary>
+          <div class="absolute left-0 z-20 mt-1 w-60 rounded-lg border border-slate-700 bg-slate-900 p-3 shadow-lg">
+            <dl class="space-y-1.5 text-xs">
+              {% for label, value in [
+                ('rclone', rclone_version or 'unavailable'),
+                ('lftp', lftp_version or 'unavailable'),
+              ] %}
+              <div class="flex items-baseline justify-between gap-3">
+                <dt class="text-slate-500">{{ label }}</dt>
+                <dd class="font-mono text-slate-200">{{ value }}</dd>
+              </div>
+              {% endfor %}
+            </dl>
+            <a href="/api/health"
+               class="mt-2 block border-t border-slate-800 pt-2 font-mono text-xs text-slate-400 hover:text-slate-100">
+              /api/health
+            </a>
+          </div>
+        </details>
+      </div>
       {# Icons rather than eight words. Every one carries a title for the
          desktop tooltip and an aria-label, because an unlabelled glyph is a
          guessing game for anyone using a screen reader and a memory test for
@@ -76,7 +117,7 @@
            page works without JavaScript, and a menu that needs it to open would
            put sign out and password change behind a script that might not load.
            The script below only adds close-on-outside-click. #}
-        <details class="relative ml-1" data-menu>
+        <details class="relative ml-1" data-menu data-account>
           <summary title="{{ user.username }}" aria-label="Account: {{ user.username }}"
                    class="flex cursor-pointer items-center gap-1.5 rounded p-2 hover:bg-slate-800 hover:text-slate-100">
             <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -283,22 +324,26 @@
   </script>
   {% endif %}
 
-  <footer class="mx-auto max-w-7xl px-4 pb-8 pt-4 text-xs text-slate-600">
-    <span class="font-mono">rclone {{ rclone_version or 'unavailable' }}</span>
-    <span class="px-2">/</span>
-    <span class="font-mono">lftp {{ lftp_version or 'unavailable' }}</span>
-  </footer>
   <script>
     // Close the account menu when the page is clicked elsewhere, or on Escape.
     // The menu works without this; it just needs a second click on the icon.
     (function () {
-      var menu = document.querySelector("details[data-menu]");
-      if (!menu) return;
+      var menus = document.querySelectorAll("details[data-menu]");
+      if (!menus.length) return;
+      function closeAll(except) {
+        menus.forEach(function (menu) {
+          if (menu !== except) menu.removeAttribute("open");
+        });
+      }
       document.addEventListener("click", function (event) {
-        if (!menu.contains(event.target)) menu.removeAttribute("open");
+        var inside = null;
+        menus.forEach(function (menu) {
+          if (menu.contains(event.target)) inside = menu;
+        });
+        closeAll(inside);
       });
       document.addEventListener("keydown", function (event) {
-        if (event.key === "Escape") menu.removeAttribute("open");
+        if (event.key === "Escape") closeAll(null);
       });
     })();
   </script>

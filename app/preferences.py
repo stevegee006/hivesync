@@ -29,7 +29,7 @@ from app.models import Setting
 
 logger = logging.getLogger(__name__)
 
-NotifyTarget = Literal["none", "webhook", "ntfy"]
+NotifyTarget = Literal["none", "webhook", "ntfy", "discord"]
 Clock = Literal["24h", "12h"]
 
 # Values that are not preferences and must not be served or overwritten by the

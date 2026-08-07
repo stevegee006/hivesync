@@ -289,7 +289,9 @@ def test_the_account_menu_works_without_javascript(authed_client: TestClient) ->
     assert 'action="/api/auth/logout"' in page
     assert "/account/password" in page
     # Not Alpine: x-show would leave the menu unopenable if the script failed.
-    menu = page[page.index("<details") : page.index("</details>")]
+    # Anchored on data-account, since the header now has two disclosures.
+    start = page.index("data-account")
+    menu = page[start : page.index("</details>", start)]
     assert "x-show" not in menu and "x-data" not in menu
 
 
@@ -417,3 +419,58 @@ def test_the_run_page_reads_keys_that_a_live_run_actually_writes() -> None:
         f"the run page reads {sorted(missing)} which no live run writes, so they "
         "will silently render as zero"
     )
+
+
+def test_the_engine_versions_live_in_the_header(authed_client: TestClient) -> None:
+    """They were a row of cards on the dashboard and a footer on every page,
+    saying the same thing twice and taking a third of a phone screen."""
+    page = authed_client.get("/").text
+
+    assert "1.74.4" in page
+    assert "/api/health" in page
+    assert "data-about" in page
+    # And not the two places they used to be.
+    assert "<footer" not in page
+    assert ">Engines</h2>" not in page
+
+
+def test_the_app_has_a_favicon(authed_client: TestClient) -> None:
+    """Without one the tab shows the browser's default globe, which is what
+    every other unidentified tab shows."""
+    page = authed_client.get("/").text
+    assert 'rel="icon"' in page
+    assert "/static/icon.svg" in page
+
+    response = authed_client.get("/static/icon.svg")
+    assert response.status_code == 200
+    assert "svg" in response.headers["content-type"]
+
+
+def test_the_favicon_is_readable_at_a_tab_size() -> None:
+    """It is drawn at 16px almost always. The hole is punched with evenodd
+    rather than painted in a background colour, because a tab strip can be light
+    or dark and a faked hole would show as a blob on one of them."""
+    icon = Path("app/web/static/icon.svg").read_text(encoding="utf-8")
+
+    assert 'fill-rule="evenodd"' in icon
+    # No strokes: under about 2px they turn to mush at tab size. Matching the
+    # attribute, not the word, which appears in the file's own comment.
+    assert "stroke=" not in icon
+
+
+def test_the_login_page_carries_the_icon_too(client: TestClient) -> None:
+    """It extends the same base, but this is the one page an unauthenticated
+    visitor sees and it is worth knowing it did not lose the head."""
+    page = client.get("/login").text
+
+    assert "/static/icon.svg" in page
+
+
+def test_the_header_logo_is_the_same_file_as_the_favicon(authed_client: TestClient) -> None:
+    """One file, so the tab and the header cannot drift apart. Also `self`
+    under the content security policy, which a data URI or a CDN would not be."""
+    page = authed_client.get("/").text
+    header = page[page.index("<header") : page.index("</header>")]
+
+    assert '<img src="/static/icon.svg"' in header
+    assert "HiveSync" in header

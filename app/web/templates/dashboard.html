@@ -137,27 +137,4 @@
 </div>
 {% endif %}
 
-<h2 class="mt-10 text-sm font-semibold uppercase tracking-wide text-slate-500">Engines</h2>
-<dl class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-  <div class="rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-3">
-    <dt class="text-xs uppercase tracking-wide text-slate-500">rclone</dt>
-    <dd class="mt-1 font-mono text-sm text-slate-200">
-      {{ rclone_version or 'unavailable' }}
-    </dd>
-  </div>
-  <div class="rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-3">
-    <dt class="text-xs uppercase tracking-wide text-slate-500">lftp</dt>
-    <dd class="mt-1 font-mono text-sm text-slate-200">
-      {{ lftp_version or 'unavailable' }}
-    </dd>
-  </div>
-  <div class="rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-3">
-    <dt class="text-xs uppercase tracking-wide text-slate-500">Health</dt>
-    <dd class="mt-1 font-mono text-sm text-slate-200">
-      <a href="/api/health" class="underline decoration-slate-700 hover:text-white">
-        /api/health
-      </a>
-    </dd>
-  </div>
-</dl>
 {% endblock %}

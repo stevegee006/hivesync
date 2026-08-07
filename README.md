@@ -8,7 +8,7 @@ HiveSync implements no file transfer protocols of its own. It drives `rclone` (a
 optionally `lftp`) as subprocesses, adding scheduling, credential management, dry
 run previews, deletion archiving, and a UI.
 
-## Status: M9 complete
+## What works today
 
 Working today, verified against the pinned rclone and live SFTP, FTP and SMB
 fixtures:
@@ -31,7 +31,7 @@ fixtures:
   is lost.
 - **Deletion archiving**: deleted files move to an archive directory instead of
   disappearing, keeping their relative paths, under a per run timestamp.
-- **Notifications** to a webhook or ntfy, **`/metrics`** for Prometheus,
+- **Notifications** to a webhook, Discord or ntfy, **`/metrics`** for Prometheus,
   **retention** for archives, logs and run history, **filter presets**, and
   **configuration export and import**.
 - **Hardening**: CSRF tokens on every state-changing request, login rate
@@ -59,8 +59,8 @@ it the moment something does. A file saved now syncs on the next cycle, seconds
 to minutes later depending on how you set it, not instantly the way Resilio's
 agents manage between themselves.
 
-**Exposing it to the internet is still your risk to weigh.** M8 closed the
-specific gaps that made it unsafe: CSRF, login rate limiting, host key pinning,
+**Exposing it to the internet is still your risk to weigh.** The specific gaps
+that made it unsafe are closed: CSRF, login rate limiting, host key pinning,
 framing, and version disclosure. It has never had a third-party security review,
 there is one admin role and no audit log, and it holds credentials for every
 endpoint it syncs. A reverse proxy that authenticates in front of it is still the
@@ -88,7 +88,129 @@ docker compose up --build
 
 Open http://localhost:8080 and sign in.
 
-### About `HIVESYNC_SECRET_KEY`
+## Running the published image
+
+The repository's `docker-compose.yml` **builds from source**, which is what you
+want for development. To run the published image instead, this is the whole file.
+Nothing is built, so no checkout is needed:
+
+```yaml
+services:
+  hivesync:
+    image: geaves006/hivesync:0.2.0
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Required. Losing this key means losing every stored credential.
+      HIVESYNC_SECRET_KEY: "paste-the-generated-key-here"
+      # Used once, to create the admin account. A password change is forced at
+      # first login, after which this line can be removed.
+      HIVESYNC_ADMIN_USER: admin
+      HIVESYNC_ADMIN_PASSWORD: "at-least-12-characters"
+      TZ: America/Denver
+      PUID: "1000"
+      PGID: "1000"
+    volumes:
+      - ./config:/config
+      # Local filesystem connections mount under /data. Add your own, read only
+      # where the job only reads from them.
+      # - /mnt/tank/media:/data/media
+```
+
+Generate the key first, and keep a copy somewhere the container host is not the
+only one:
+
+```bash
+docker run --rm python:3.12-slim sh -c "pip install -q cryptography && python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+```
+
+Then:
+
+```bash
+docker compose up -d
+```
+
+Pin the version tag rather than `:latest`. `latest` moves under you on the next
+release, and this is a program that deletes files on a schedule.
+
+**Compose passes only the variables listed in `environment:`.** Putting one in
+`.env` does nothing on its own: `.env` feeds variable substitution, not the
+container. Adding `HIVESYNC_API_TOKEN` to `.env` without also adding a line for
+it here is a silent no-op.
+
+### Upgrading
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Migrations run at container start, before the application is served, so a failed
+migration stops the container rather than leaving a half-migrated database
+answering requests. Back up `./config` first; it is one SQLite database and some
+logs, so a copy of the directory is a complete backup.
+
+## Portainer stack
+
+Portainer has no `.env` file, so the values go in the stack's own environment
+section rather than being interpolated from disk.
+
+1. **Stacks** then **Add stack**, and give it a name, for example `hivesync`.
+2. Choose **Web editor** and paste the compose file above, with one change:
+   replace each hardcoded value with a variable, so the secret is not stored in
+   the stack definition where it is visible to anyone who can view the stack.
+
+   ```yaml
+   services:
+     hivesync:
+       image: geaves006/hivesync:0.2.0
+       restart: unless-stopped
+       ports:
+         - "8080:8080"
+       environment:
+         HIVESYNC_SECRET_KEY: ${HIVESYNC_SECRET_KEY}
+         HIVESYNC_ADMIN_USER: ${HIVESYNC_ADMIN_USER}
+         HIVESYNC_ADMIN_PASSWORD: ${HIVESYNC_ADMIN_PASSWORD}
+         TZ: ${TZ}
+         PUID: ${PUID}
+         PGID: ${PGID}
+       volumes:
+         - /opt/hivesync/config:/config
+         # - /mnt/tank/media:/data/media
+   ```
+
+3. Under **Environment variables**, add each one. Use **Advanced mode** to paste
+   them as a block:
+
+   ```
+   HIVESYNC_SECRET_KEY=the-generated-key
+   HIVESYNC_ADMIN_USER=admin
+   HIVESYNC_ADMIN_PASSWORD=at-least-12-characters
+   TZ=America/Denver
+   PUID=1000
+   PGID=1000
+   ```
+
+4. **Deploy the stack**, then open `http://<host>:8080`.
+
+Notes specific to Portainer:
+
+- **Use a bind mount, not a named volume, for `/config`**, or at least know where
+  the named volume lives. The encryption key and the database have to survive the
+  stack being recreated, and a `docker volume prune` on a busy host is an easy way
+  to lose both.
+- **The host directory must be writable by `PUID`.** The container chowns
+  `/config` at start, but it cannot chown a path the host has made read only.
+  `/data` is deliberately never chowned: recursively changing ownership on a
+  mounted NAS share would take hours across millions of inodes.
+- **Remove `HIVESYNC_ADMIN_PASSWORD` after the first login** and redeploy. It is
+  only read when the user table is empty, but leaving it in the stack definition
+  leaves a password on a screen.
+- **Upgrading** is editing the image tag and redeploying. Portainer pulls the new
+  image and recreates the container; `/config` survives because it is a bind
+  mount.
+
+## About `HIVESYNC_SECRET_KEY`
 
 Every stored credential is encrypted with this key, and HiveSync never persists
 it. Two consequences:
@@ -247,9 +369,13 @@ See `.env.example` for the full list. Required: `HIVESYNC_SECRET_KEY`, and
 `HIVESYNC_AUTH_MODE` accepts `local` (default) and `none`. `none` gives every
 visitor full control of every job, including deletion, and is only appropriate
 behind a proxy that authenticates for you; it logs a warning at startup and shows
-a persistent banner in the UI. `trusted_header` is declared in the spec but
-refuses to start today, because a half-implemented proxy trust check is an
-authentication bypass. It arrives in M8.
+a persistent banner in the UI. `trusted_header` accepts an identity asserted by a
+reverse proxy, and trusts the **socket peer** rather than an `X-Forwarded-For`
+the client could have written itself: set `HIVESYNC_TRUSTED_PROXIES` to the
+proxy's address and `HIVESYNC_TRUSTED_HEADER` to the header it sets. The
+asserted username must already exist as a HiveSync user; it never creates one,
+because a header that provisions an admin is a registration form with no
+password on it.
 
 `HIVESYNC_MAX_CONCURRENT_RUNS` (default 3) sizes the worker pool for syncs and
 dry runs. `HIVESYNC_METRICS_TOKEN` lets Prometheus scrape `/metrics` with a
@@ -459,7 +585,7 @@ Then build and push multi-arch, amd64 and arm64:
 make push
 ```
 
-This publishes `geaves006/hivesync:0.1.0` and `:latest`. Override the namespace
+This publishes `geaves006/hivesync:0.2.0` and `:latest`. Override the namespace
 with `make push DOCKERHUB_NAMESPACE=other`.
 
 A first push creates the Docker Hub repository as **public** by default. Create it
@@ -489,15 +615,15 @@ Read and Write scope.
 Then publishing is a tag:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 The workflow runs on every push to `main` and every pull request as well, but
 **only a `v*` tag publishes**. Other runs build, test, and verify the image
 without pushing, so a broken image cannot reach the registry. The verification
 step starts the container and asserts that health returns `ok` with a matching
-rclone version, that `/login` serves, and that PID 1 is not root, which is M0's
-acceptance criterion checked on every commit.
+rclone version, that `/login` serves, and that PID 1 is not root, on every
+commit.
 
 ## Testing
 

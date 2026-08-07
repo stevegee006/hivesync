@@ -134,6 +134,8 @@ def send(preferences: Preferences, payload: dict[str, Any]) -> Delivery:
     try:
         if target == "webhook":
             return _send_webhook(preferences, payload)
+        if target == "discord":
+            return _send_discord(preferences, payload)
         return _send_ntfy(preferences, payload)
     except httpx.TimeoutException:
         detail = (
@@ -161,6 +163,48 @@ def _send_webhook(preferences: Preferences, payload: dict[str, Any]) -> Delivery
         )
     response = httpx.post(url, json=payload, timeout=preferences.notify_timeout_seconds)
     return _from_response(response, "webhook")
+
+
+# Discord's own palette, so a result is readable before the text is.
+_DISCORD_COLOURS = {"success": 0x2ECC71, "failed": 0xE74C3C, "cancelled": 0xE67E22}
+_DISCORD_DEFAULT_COLOUR = 0x95A5A6
+# Discord truncates a longer description rather than rejecting it, but a
+# notification that has been cut in half is worse than one that fits.
+_DISCORD_DESCRIPTION_LIMIT = 4000
+
+
+def discord_body(payload: dict[str, Any]) -> dict[str, Any]:
+    """Shape a run result the way Discord's webhook API requires.
+
+    Discord rejects a body with neither `content` nor `embeds` with a bare
+    HTTP 400, which is what a plain JSON webhook against a Discord URL gets and
+    exactly what was reported. It is not a HiveSync payload with extra fields
+    allowed: the schema is Discord's.
+    """
+    title, body = summarise(payload)
+    embed: dict[str, Any] = {
+        "title": title[:256],
+        "description": body[:_DISCORD_DESCRIPTION_LIMIT],
+        "color": _DISCORD_COLOURS.get(str(payload.get("status")), _DISCORD_DEFAULT_COLOUR),
+    }
+    url = payload.get("url")
+    if url:
+        embed["url"] = str(url)
+    return {"embeds": [embed]}
+
+
+def _send_discord(preferences: Preferences, payload: dict[str, Any]) -> Delivery:
+    url = preferences.notify_webhook_url.strip()
+    if not url:
+        return Delivery(
+            attempted=False,
+            ok=False,
+            detail="The Discord target is selected but no webhook URL is set.",
+        )
+    response = httpx.post(
+        url, json=discord_body(payload), timeout=preferences.notify_timeout_seconds
+    )
+    return _from_response(response, "discord")
 
 
 def _send_ntfy(preferences: Preferences, payload: dict[str, Any]) -> Delivery:

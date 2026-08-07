@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="HiveSync">
+  <title>HiveSync</title>
+  <!--
+    A honeycomb cell, drawn as one path with evenodd so the middle is a real
+    hole rather than a second shape in the background colour: a tab strip can be
+    light or dark and a faked hole would show as a grey blob on one of them.
+
+    Deliberately two flat shapes and no fine detail. This is displayed at 16px
+    most of the time, where an arrow or any stroke under about 2px turns to
+    mush. Amber rather than the UI's sky blue because a tab strip is full of
+    blue icons and the point of this is to be findable.
+  -->
+  <path fill="#f59e0b" fill-rule="evenodd"
+        d="M16 1.5 29 9v14l-13 7.5L3 23V9L16 1.5Z
+           M16 9.2 22.3 12.8v7.4L16 23.8 9.7 20.2v-7.4L16 9.2Z"/>
+</svg>

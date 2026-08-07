@@ -285,6 +285,26 @@ Append findings here as they are discovered. Format: date, area, finding.
 - 2026-08-06, ux, **the layout was never looked at below 1280px.** At 375px the header nav wrapped around the brand so it read as a nav item, and the activity strip's three 176px columns stacked into 240px of a 812px screen, sitting on top of the last job card because `pb-40` was written for the desktop height. Verified by rendering every authenticated page at 375px in a real browser, via a throwaway app and the test fixtures' admin. Tables were already fine: each is in its own `overflow-x-auto` box, which is the rule to keep.
 - 2026-08-06, tooling, a verification step whose output goes to `/dev/null` is not a verification step. The snapshot regeneration failed silently for two rounds and I read stale pages as though they were current, concluding a change had not taken effect when the truth was a template syntax error. Never suppress the output of the thing you are using as evidence.
 
+- 2026-08-06, notify, **Discord rejects a generic webhook body with a bare HTTP 400.** Its webhook API takes its own schema and requires `content` or `embeds`; a body with neither is refused with no explanation, which is exactly what a HiveSync JSON payload posted at a Discord URL gets. It is not a matter of extra fields being tolerated. `discord` is its own target rather than a special case inside the webhook sender, so what is sent is visible rather than inferred from the URL.
+- 2026-08-06, testing, a test that greps a file for a bare word will match the file's own comment. `assert "stroke" not in icon` failed on a correct icon whose comment explained why it has no strokes. Match the attribute (`stroke=`), not the word.
+
+### Presentation, added after M9
+
+The engine versions were a row of cards on the dashboard **and** a footer on
+every page, saying the same thing twice for a third of a phone screen. They are
+now behind an info disclosure beside the wordmark. The nav is icons with titles
+and aria-labels, and username, password and sign out are one account menu.
+
+**Both menus are native `<details>`, not Alpine.** `base.html` promises every
+page works without JavaScript, and a scripted dropdown would put sign out behind
+an asset that might not load. The only script involved closes them on an outside
+click, which is an enhancement rather than a requirement.
+
+The favicon and the header logo are **one file**, `static/icon.svg`, so the tab
+and the header cannot drift. The hole in the honeycomb is punched with
+`fill-rule="evenodd"` rather than painted in a background colour: a tab strip can
+be light or dark, and a faked hole would show as a blob on one of them.
+
 ### M1 acceptance status, verified 2026-08-05
 
 All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,

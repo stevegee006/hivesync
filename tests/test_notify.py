@@ -264,3 +264,82 @@ def test_a_selected_target_with_nothing_filled_in_says_which_field() -> None:
     delivery = notify.send(Preferences(notify_target="ntfy"), notify.sample_payload())
     assert delivery.attempted is False
     assert "topic" in delivery.detail
+
+
+# --------------------------------------------------------------------------
+# Discord
+#
+# Reported as "webhooks for Discord don't work": the plain webhook target posts
+# HiveSync's own JSON, and Discord answers a body with neither `content` nor
+# `embeds` with a bare HTTP 400 that explains nothing.
+# --------------------------------------------------------------------------
+
+
+def test_discord_gets_a_body_discord_accepts(receiver) -> None:
+    preferences = Preferences(notify_target="discord", notify_webhook_url=_url(receiver))
+    payload = notify.build_payload(_job(), _run(), base_url="http://nas.local:8080")
+
+    delivery = notify.send(preferences, payload)
+
+    assert delivery.ok is True
+    body = json.loads(receiver.received[0]["body"])
+    # The one thing Discord requires, and the one thing the generic webhook
+    # never sent.
+    assert "embeds" in body
+    assert len(body["embeds"]) == 1
+    embed = body["embeds"][0]
+    assert "Nightly Media" in embed["title"]
+    assert "failed" in embed["description"]
+    assert "/runs/" in embed["url"]
+
+
+def test_a_failed_run_is_red_and_a_successful_one_is_not() -> None:
+    """The colour is the only part read before the text."""
+
+    def body(status: str) -> dict:
+        return notify.discord_body(
+            {
+                "job": "j",
+                "status": status,
+                "files_transferred": 0,
+                "files_deleted": 0,
+                "files_archived": 0,
+            }
+        )
+
+    failed, ok, odd = body("failed"), body("success"), body("skipped")
+
+    assert failed["embeds"][0]["color"] != ok["embeds"][0]["color"]
+    assert odd["embeds"][0]["color"] not in (
+        failed["embeds"][0]["color"],
+        ok["embeds"][0]["color"],
+    )
+
+
+def test_discord_without_a_url_is_refused_before_any_request(receiver) -> None:
+    preferences = Preferences(notify_target="discord", notify_webhook_url="")
+
+    delivery = notify.send(preferences, payload=notify.build_payload(_job(), _run()))
+
+    assert delivery.attempted is False
+    assert "no webhook URL" in delivery.detail
+    assert receiver.received == []
+
+
+def test_a_very_long_description_is_trimmed_to_what_discord_takes() -> None:
+    """Discord truncates rather than rejecting, and half a notification is worse
+    than one that fits."""
+    body = notify.discord_body(
+        {
+            "job": "j" * 500,
+            "status": "failed",
+            "files_transferred": 0,
+            "files_deleted": 0,
+            "files_archived": 0,
+            "error": "e" * 9000,
+        }
+    )
+
+    embed = body["embeds"][0]
+    assert len(embed["title"]) <= 256
+    assert len(embed["description"]) <= 4000
