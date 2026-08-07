@@ -7,8 +7,13 @@
 {% block content %}
 <div class="mx-auto mt-16 w-full max-w-sm">
   <div class="mb-8">
-    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">HiveSync</h1>
-    <p class="mt-1 text-sm text-slate-500">Scheduled file sync, built on rclone.</p>
+    {# The same file the favicon and the header use. alt is empty because the
+       wordmark below says the name already. #}
+    <div class="flex items-center gap-2.5">
+      <img src="/static/icon.svg" alt="" width="36" height="36" class="h-9 w-9">
+      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">HiveSync</h1>
+    </div>
+    <p class="mt-2 text-sm text-slate-500">Scheduled file sync, built on rclone.</p>
   </div>
 
   {% include "partials/_flash.html" %}

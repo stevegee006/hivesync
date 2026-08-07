@@ -79,12 +79,6 @@
         </dd>
       </div>
       <div>
-        <dt class="text-slate-500">Last checked</dt>
-        <dd class="mt-0.5 text-slate-300">
-          {% if job.continuous %}{{ job.last_checked_at | localtime }}{% else %}&mdash;{% endif %}
-        </dd>
-      </div>
-      <div>
         <dt class="text-slate-500">Last run</dt>
         <dd class="mt-0.5">
           {% if card.last_run %}
@@ -94,12 +88,29 @@
                     {% else %}text-slate-300{% endif %} hover:underline">
             {{ card.last_run.status.value }}
           </a>
-          <span class="text-slate-500">{{ card.last_run.finished_at | localtime }}</span>
+          {# A run still going has no finish time, and the localtime filter
+             renders a missing timestamp as "never", so this read "running
+             never". Show when it started instead. #}
+          <span class="text-slate-500">
+            {% if card.last_run.finished_at %}
+            {{ card.last_run.finished_at | localtime }}
+            {% else %}
+            since {{ card.last_run.started_at | localtime }}
+            {% endif %}
+          </span>
           {% else %}
           <span class="text-slate-600">never</span>
           {% endif %}
         </dd>
       </div>
+      {% if job.continuous %}
+      <div>
+        <dt class="text-slate-500" title="The last time this job looked for changes. A watching job that finds nothing records no run, so this is how you know it is still looking.">
+          Last checked
+        </dt>
+        <dd class="mt-0.5 text-slate-300">{{ job.last_checked_at | localtime }}</dd>
+      </div>
+      {% endif %}
       <div>
         <dt class="text-slate-500">Next run</dt>
         <dd class="mt-0.5 text-slate-300">

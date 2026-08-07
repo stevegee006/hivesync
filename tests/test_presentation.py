@@ -474,3 +474,93 @@ def test_the_header_logo_is_the_same_file_as_the_favicon(authed_client: TestClie
 
     assert '<img src="/static/icon.svg"' in header
     assert "HiveSync" in header
+
+
+# --------------------------------------------------------------------------
+# The job card
+# --------------------------------------------------------------------------
+
+
+def _card_job(settings, *, continuous: bool = False, running: bool = False) -> None:
+    from datetime import UTC, datetime
+
+    from app.models import JobRun, RunMode, RunStatus, RunTrigger
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="cs", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="cd", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(
+        name="Carded",
+        source_connection_id=source.id,
+        dest_connection_id=dest.id,
+        filters={},
+        schedule_cron=None if continuous else "0 * * * *",
+        continuous=continuous,
+    )
+    session.add(job)
+    session.commit()
+    if running:
+        session.add(
+            JobRun(
+                job_id=job.id,
+                trigger=RunTrigger.manual,
+                mode=RunMode.dry_run,
+                status=RunStatus.running,
+                started_at=datetime(2026, 8, 6, 22, 36, tzinfo=UTC),
+                finished_at=None,
+            )
+        )
+        session.commit()
+
+
+def test_a_running_job_does_not_say_it_finished_never(authed_client: TestClient, settings) -> None:
+    """A run still going has no finish time, and the localtime filter renders a
+    missing timestamp as "never", so the card read "running never"."""
+    _card_job(settings, running=True)
+
+    page = authed_client.get("/").text
+
+    assert "running" in page
+    assert "running\n            never" not in page.replace("\r\n", "\n")
+    assert re.search(r"running\s*</a>\s*<span[^>]*>\s*since ", page), (
+        "a running job should say when it started"
+    )
+
+
+def test_last_checked_is_only_shown_for_a_watching_job(authed_client: TestClient, settings) -> None:
+    """It is the proof a watching job is still looking, and a watching job that
+    finds nothing records no run. On a scheduled job it is meaningless, and a
+    labelled empty cell reads as a missing figure rather than an inapplicable
+    one."""
+    _card_job(settings, continuous=False)
+
+    assert "Last checked" not in authed_client.get("/").text
+
+
+def test_a_watching_job_does_show_last_checked(authed_client: TestClient, settings) -> None:
+    _card_job(settings, continuous=True)
+
+    page = authed_client.get("/").text
+
+    assert "Last checked" in page
+    # And says what it means, since the name alone does not.
+    assert "still looking" in page
+
+
+def test_the_continuous_help_text_says_polling_plainly() -> None:
+    """The previous wording ("no backend HiveSync supports announces one") was
+    hard to parse, and this is the sentence that sets expectations for the whole
+    feature."""
+    form = (TEMPLATE_DIR / "jobs" / "form.html").read_text(encoding="utf-8")
+
+    assert "polling, not watching" in form
+    assert "announces one" not in form
+
+
+def test_the_login_page_shows_the_logo(client: TestClient) -> None:
+    page = client.get("/login").text
+
+    assert '<img src="/static/icon.svg"' in page
+    assert "HiveSync" in page

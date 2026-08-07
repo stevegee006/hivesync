@@ -1,4 +1,26 @@
+<div align="center">
+
+<img src="app/web/static/icon.svg" alt="" width="96" height="96">
+
 # HiveSync
+
+**Self-hosted file sync orchestration, with a web UI**
+
+Scheduled and continuous sync &bull; Dry runs before anything moves &bull; Deletions archived, not deleted
+
+[![version](https://img.shields.io/badge/version-0.2.1-3fb950)](https://github.com/stevegee006/hivesync/releases)
+[![docker](https://img.shields.io/badge/docker-geaves006%2Fhivesync-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/geaves006/hivesync)
+[![platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-555)](https://hub.docker.com/r/geaves006/hivesync/tags)
+[![license](https://img.shields.io/badge/license-not%20yet%20chosen-lightgrey)](#license)
+
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
+[![rclone](https://img.shields.io/badge/rclone-1.74.4%20pinned-3f79b3)](https://rclone.org/)
+
+</div>
+
+---
 
 A self-hosted, Docker-based file sync orchestrator with a web UI. Replaces Resilio
 Sync for cloud-server-to-local-server directory syncing, adding multi-protocol

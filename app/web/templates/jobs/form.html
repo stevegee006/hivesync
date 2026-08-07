@@ -390,9 +390,11 @@
           <span>
             Watch continuously
             <span class="mt-0.5 block text-xs text-slate-500">
-              Re-checks on a loop instead of a schedule. Nothing here can be told
-              when a file changes: no backend HiveSync supports announces one, so
-              this polls, and each poll lists both endpoints in full.
+              Re-checks on a loop instead of waiting for a schedule. This is
+              polling, not watching: none of the protocols HiveSync speaks can
+              tell it that a file has changed, so every cycle lists both
+              endpoints in full. On a large tree that listing is the cost that
+              decides how short an interval is sensible.
             </span>
           </span>
         </label>
