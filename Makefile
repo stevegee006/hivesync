@@ -10,7 +10,7 @@ include versions.env
 export
 
 PYTHON  ?= python
-VERSION ?= 0.2.3
+VERSION ?= 0.2.4
 
 IMAGE_NAME ?= hivesync
 LOCAL_IMAGE := $(IMAGE_NAME):$(VERSION)
