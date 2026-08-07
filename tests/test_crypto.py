@@ -99,3 +99,34 @@ def test_session_secret_is_derived_not_reused() -> None:
     assert derived != KEY_A
     assert derived == crypto.derive_session_secret(KEY_A)
     assert derived != crypto.derive_session_secret(KEY_B)
+
+
+def test_the_documented_key_commands_produce_a_usable_key() -> None:
+    """The README tells people to use `openssl rand -base64 32`, which emits
+    standard base64 with `+` and `/` where Fernet's documentation says url-safe
+    with `-` and `_`. Both decode to the same 32 bytes and both are accepted, so
+    the advice is sound, but it is the kind of thing that is true until a
+    dependency tightens its validation.
+    """
+    import base64
+    import os
+
+    from app.crypto import SecretBox
+
+    # A key whose standard spelling really does contain both characters, rather
+    # than random bytes that might encode identically in either alphabet.
+    while True:
+        raw = os.urandom(32)
+        standard = base64.b64encode(raw).decode()
+        if "+" in standard and "/" in standard:
+            break
+    urlsafe = base64.urlsafe_b64encode(raw).decode()
+    assert standard != urlsafe
+
+    for spelling in (standard, urlsafe):
+        box = SecretBox(spelling)
+        assert box.decrypt(box.encrypt("hunter2")) == "hunter2"
+
+    # And they are the same key, so a key copied in either form still reads the
+    # database written with the other.
+    assert SecretBox(urlsafe).decrypt(SecretBox(standard).encrypt("same")) == "same"

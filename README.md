@@ -72,11 +72,26 @@ better arrangement, with `HIVESYNC_AUTH_MODE=trusted_header`.
 cp .env.example .env
 ```
 
-Generate the encryption key and put it in `.env` as `HIVESYNC_SECRET_KEY`:
+Generate the encryption key and put it in `.env` as `HIVESYNC_SECRET_KEY`.
+Anywhere with openssl, which is most places:
+
+```bash
+openssl rand -base64 32
+```
+
+A Fernet key is 32 random bytes in base64, which is exactly what that prints.
+`openssl` emits standard base64, with `+` and `/`, where the Fernet
+documentation says url-safe, with `-` and `_`. Both are accepted and decode to
+the same 32 bytes, so either spelling of the same key works and they are
+interchangeable. Verified against the pinned `cryptography`, not assumed.
+
+Without openssl, or to get the url-safe spelling:
 
 ```bash
 docker run --rm python:3.12-slim sh -c "pip install -q cryptography && python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
 ```
+
+From a checkout, `make secret-key` does the same thing.
 
 Set `HIVESYNC_ADMIN_PASSWORD` in `.env` to anything at least 12 characters. You
 will be forced to change it at first login, after which the variable can be
@@ -120,6 +135,13 @@ services:
 
 Generate the key first, and keep a copy somewhere the container host is not the
 only one:
+
+```bash
+openssl rand -base64 32
+```
+
+A Fernet key is 32 random bytes in base64, which is what that prints. If openssl
+is not available:
 
 ```bash
 docker run --rm python:3.12-slim sh -c "pip install -q cryptography && python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
