@@ -338,6 +338,9 @@ Two people submitting at the same moment is handled by re-checking the count
 loser has to be told the instance is taken rather than quietly given a second
 admin. SQLite serialises writers, so the loser's own commit reveals the race.
 
+- 2026-08-07, css, **the layout jumped sideways between pages, and it was the scrollbar.** A page tall enough to scroll loses about 15px of usable width to the scrollbar, and the content is centred in a `max-w-7xl mx-auto` container, so navigating from a short page to a tall one moved everything. Settings was the page people noticed because it is the tallest, but it happens on any pair where one scrolls and the other does not. Fixed with `scrollbar-gutter: stable` on `html`, plus an `@supports` fallback of `overflow-y: scroll`. Measured before and after: `main` ended 15px apart, and now ends at the same x on both.
+- 2026-08-07, tooling, **the browser pane caches `app.css` across a rebuild**, so a style fix can look like it did nothing. The rule was in the file the container served and absent from `document.styleSheets`, which is the check worth doing: fetch the stylesheet and compare it against the loaded sheet before concluding a change had no effect. Appending a query string to the `<link href>` in a snapshot is the quickest way to force the real thing.
+
 ### M1 acceptance status, verified 2026-08-05
 
 All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,

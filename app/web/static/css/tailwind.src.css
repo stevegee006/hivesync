@@ -29,3 +29,22 @@ summary {
 summary::-webkit-details-marker {
   display: none;
 }
+
+/* Reserve the scrollbar's width on every page, whether or not that page needs
+   one. Without this the usable width changes by about 15px between a page that
+   scrolls and one that does not, and since the content is centred in a
+   max-width container, everything jumps sideways when you navigate. Settings is
+   the tallest page, so it was the obvious one, but it happens on any pair where
+   one scrolls and the other does not.
+
+   The @supports fallback is for browsers without scrollbar-gutter: it always
+   paints a scrollbar track, which is less tidy but keeps the width constant. */
+html {
+  scrollbar-gutter: stable;
+}
+
+@supports not (scrollbar-gutter: stable) {
+  html {
+    overflow-y: scroll;
+  }
+}

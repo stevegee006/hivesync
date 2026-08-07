@@ -564,3 +564,20 @@ def test_the_login_page_shows_the_logo(client: TestClient) -> None:
 
     assert '<img src="/static/icon.svg"' in page
     assert "HiveSync" in page
+
+
+def test_the_scrollbar_gutter_is_reserved_on_every_page() -> None:
+    """Without this the usable width changes by about 15px between a page that
+    scrolls and one that does not. The content is centred in a max-width
+    container, so everything jumped sideways on navigation. Settings was the
+    obvious one because it is the tallest, but it happened on any pair where one
+    page scrolls and the other does not.
+
+    Measured in a browser: `main` ended at the same x on a scrolling and a
+    non-scrolling page once this was set, and 15px apart before.
+    """
+    css = Path("app/web/static/css/tailwind.src.css").read_text(encoding="utf-8")
+
+    assert "scrollbar-gutter: stable" in css
+    # And a fallback, so a browser without it still gets a constant width.
+    assert "overflow-y: scroll" in css
