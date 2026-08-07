@@ -8,7 +8,7 @@
 
 Scheduled and continuous sync &bull; Dry runs before anything moves &bull; Deletions archived, not deleted
 
-[![version](https://img.shields.io/badge/version-0.2.2-3fb950)](https://github.com/stevegee006/hivesync/releases)
+[![version](https://img.shields.io/badge/version-0.2.3-3fb950)](https://github.com/stevegee006/hivesync/releases)
 [![docker](https://img.shields.io/badge/docker-geaves006%2Fhivesync-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/geaves006/hivesync)
 [![platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-555)](https://hub.docker.com/r/geaves006/hivesync/tags)
 [![license](https://img.shields.io/badge/license-not%20yet%20chosen-lightgrey)](#license)
@@ -192,7 +192,7 @@ Three are published for every release:
 
 | Tag | Moves | Use it when |
 |---|---|---|
-| `0.2.2` | never | you want the container to run the same code until you decide otherwise |
+| `0.2.3` | never | you want the container to run the same code until you decide otherwise |
 | `0.2` | on patch releases within 0.2 | you want fixes without a feature change |
 | `latest` | on every release | you would rather be current than stable |
 
@@ -659,7 +659,7 @@ Then build and push multi-arch, amd64 and arm64:
 make push
 ```
 
-This publishes `geaves006/hivesync:0.2.2` and `:latest`. Override the namespace
+This publishes `geaves006/hivesync:0.2.3` and `:latest`. Override the namespace
 with `make push DOCKERHUB_NAMESPACE=other`.
 
 A first push creates the Docker Hub repository as **public** by default. Create it
@@ -689,7 +689,7 @@ Read and Write scope.
 Then publishing is a tag:
 
 ```bash
-git tag v0.2.2 && git push origin v0.2.2
+git tag v0.2.3 && git push origin v0.2.3
 ```
 
 The workflow runs on every push to `main` and every pull request as well, but
