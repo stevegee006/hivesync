@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import logging
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,7 @@ from app.models import Setting
 logger = logging.getLogger(__name__)
 
 NotifyTarget = Literal["none", "webhook", "ntfy"]
+Clock = Literal["24h", "12h"]
 
 # Values that are not preferences and must not be served or overwritten by the
 # Settings screen. The key fingerprint lives in the same table.
@@ -67,6 +69,37 @@ class Preferences(BaseModel):
     run_history_keep: int = Field(default=200, ge=10, le=10000)
     log_retention_days: int = Field(default=90, ge=1, le=3650)
     log_max_total_mb: int = Field(default=512, ge=16, le=102400)
+
+    # ------------------------------------------------------------- presentation
+    # How timestamps are rendered. Storage is always UTC; this only decides what
+    # the screen says.
+    #
+    # Empty means follow the TZ environment variable, which is what a container
+    # operator sets and what the scheduler already logs at startup. A value here
+    # overrides it for the UI without a restart, which is the point: TZ is baked
+    # into the compose file and changing it means recreating the container.
+    display_timezone: str = ""
+    clock: Clock = "24h"
+
+    @field_validator("display_timezone")
+    @classmethod
+    def _known_zone(cls, value: str) -> str:
+        """Refuse a zone the machine cannot resolve.
+
+        Stored unchecked, every timestamp on every page would silently fall back
+        to UTC, and the only symptom would be times that are quietly wrong.
+        """
+        zone = value.strip()
+        if not zone:
+            return ""
+        try:
+            ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"{zone!r} is not a timezone this machine knows. Use a name from the "
+                "IANA database, for example America/Denver or Europe/London."
+            ) from exc
+        return zone
 
     def redacted(self) -> dict[str, object]:
         """A form safe to log or export. See the module docstring."""

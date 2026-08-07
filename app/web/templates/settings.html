@@ -113,6 +113,50 @@
   </section>
 
   <section class="border-t border-slate-800 pt-6">
+    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Presentation</h2>
+    <p class="mt-1 text-xs text-slate-500">
+      How times are shown. Everything is stored in UTC either way, so changing
+      these re-labels existing runs rather than altering them.
+    </p>
+    <div class="mt-3 grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div>
+        <label for="display_timezone" class="block text-sm text-slate-400">Timezone</label>
+        <input id="display_timezone" name="display_timezone" list="timezone-options"
+               value="{{ preferences.display_timezone }}"
+               placeholder="{{ environment_timezone }} (from TZ)"
+               class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+        <datalist id="timezone-options">
+          {% for zone in timezones %}<option value="{{ zone }}">{% endfor %}
+        </datalist>
+        <p class="mt-1 text-xs text-slate-500">
+          Leave empty to follow the container's TZ, currently
+          <span class="font-mono">{{ environment_timezone }}</span>. Setting one
+          here takes effect immediately, where changing TZ needs the container
+          recreated.
+        </p>
+      </div>
+
+      <div>
+        <label for="clock" class="block text-sm text-slate-400">Clock</label>
+        <select id="clock" name="clock"
+                class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          <option value="24h" {% if preferences.clock == '24h' %}selected{% endif %}>
+            24 hour (17:30)
+          </option>
+          <option value="12h" {% if preferences.clock == '12h' %}selected{% endif %}>
+            12 hour (05:30 PM)
+          </option>
+        </select>
+        <p class="mt-1 text-xs text-slate-500">
+          Applies to timestamps and to the schedule shown on each job card. A
+          cron expression is always written in 24 hour time, because that is
+          what cron itself takes.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="border-t border-slate-800 pt-6">
     <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Retention</h2>
     <div class="mt-3 grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div>

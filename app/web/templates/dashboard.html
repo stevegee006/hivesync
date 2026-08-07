@@ -70,7 +70,9 @@
             every {{ job.continuous_interval_seconds }}s
           </span>
           {% elif job.schedule_cron %}
-          <span class="font-mono">{{ job.schedule_cron }}</span>
+          {# The expression stays available on hover: it is what the job editor
+             holds, and someone checking a schedule wants to see it exactly. #}
+          <span title="{{ job.schedule_cron }}">{{ job.schedule_cron | schedule }}</span>
           {% else %}
           <span class="text-slate-600">on demand</span>
           {% endif %}

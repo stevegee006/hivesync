@@ -20,7 +20,7 @@ from app import notify, portable
 from app import preferences as preferences_store
 from app.api.deps import AppSettings, CurrentUser, DbSession
 from app.jobs import retention
-from app.preferences import NotifyTarget, Preferences
+from app.preferences import Clock, NotifyTarget, Preferences
 
 router = APIRouter(tags=["settings"])
 
@@ -38,6 +38,11 @@ class SettingsRead(BaseModel):
     run_history_keep: int
     log_retention_days: int
     log_max_total_mb: int
+    display_timezone: str
+    clock: Clock
+    # The zone in force once the empty "follow the environment" case is
+    # resolved, so a caller does not have to know the rule to display it.
+    effective_timezone: str
     # Read only, from the environment. Changing these needs a restart, and
     # showing them here is how an operator finds that out.
     auth_mode: str
@@ -58,9 +63,20 @@ class SettingsUpdate(BaseModel):
     run_history_keep: int | None = Field(default=None, ge=10, le=10000)
     log_retention_days: int | None = Field(default=None, ge=1, le=3650)
     log_max_total_mb: int | None = Field(default=None, ge=16, le=102400)
+    # An empty string is a real value here: it means "follow the TZ environment
+    # variable" rather than "leave it alone", so unlike the webhook URL it is
+    # not skipped when blank.
+    display_timezone: str | None = None
+    clock: Clock | None = None
 
 
-def to_read(preferences: Preferences, *, auth_mode: str, max_concurrent_runs: int) -> SettingsRead:
+def to_read(
+    preferences: Preferences,
+    *,
+    auth_mode: str,
+    max_concurrent_runs: int,
+    environment_timezone: str = "UTC",
+) -> SettingsRead:
     return SettingsRead(
         notify_target=preferences.notify_target,
         notify_webhook_configured=bool(preferences.notify_webhook_url),
@@ -72,6 +88,9 @@ def to_read(preferences: Preferences, *, auth_mode: str, max_concurrent_runs: in
         run_history_keep=preferences.run_history_keep,
         log_retention_days=preferences.log_retention_days,
         log_max_total_mb=preferences.log_max_total_mb,
+        display_timezone=preferences.display_timezone,
+        clock=preferences.clock,
+        effective_timezone=preferences.display_timezone or environment_timezone,
         auth_mode=auth_mode,
         max_concurrent_runs=max_concurrent_runs,
     )
@@ -103,6 +122,7 @@ def read_settings(_user: CurrentUser, session: DbSession, settings: AppSettings)
         preferences_store.load(session),
         auth_mode=settings.auth_mode,
         max_concurrent_runs=settings.max_concurrent_runs,
+        environment_timezone=settings.timezone,
     )
 
 
@@ -120,6 +140,7 @@ def update_settings(
         updated,
         auth_mode=settings.auth_mode,
         max_concurrent_runs=settings.max_concurrent_runs,
+        environment_timezone=settings.timezone,
     )
 
 

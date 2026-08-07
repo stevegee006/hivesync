@@ -421,3 +421,79 @@ def test_the_shared_formatter_is_served(authed_client: TestClient) -> None:
 
     assert response.status_code == 200
     assert "HiveSync" in response.text
+
+
+# --------------------------------------------------------------------------
+# What actually reaches the browser
+#
+# The panel tests below check the broker and the template. Neither noticed that
+# the endpoint in between dropped the figures on the floor, which is the whole
+# reason the progress panel never appeared. Assert on the wire format.
+# --------------------------------------------------------------------------
+
+
+def _sse_payloads(client: TestClient, run_id: int) -> list[dict]:
+    import json as _json
+
+    with client.stream("GET", f"/api/runs/{run_id}/stream") as response:
+        body = "".join(_drain(response.iter_text()))
+    return [
+        _json.loads(chunk[len("data: ") :])
+        for chunk in body.split("\n\n")
+        if chunk.startswith("data: ")
+    ]
+
+
+def test_the_stream_carries_the_progress_figures(authed_client: TestClient, settings) -> None:
+    """The endpoint serialised only kind and text, so a stats event arrived
+    empty and the panel had nothing to draw."""
+    from app.jobs.events import broker
+
+    # A running run: progress on a finished one is not replayed, because it is
+    # a live figure rather than history.
+    run_id = _queued_run(settings, RunMode.live)
+    # The broker is a module level singleton while run ids restart with each
+    # test database, so an earlier test may already have retired this id.
+    broker._finished.pop(run_id, None)
+    broker.publish(
+        run_id,
+        RunEvent(kind="stats", data={"percentage": 42, "files": [{"name": "a.bin"}]}),
+    )
+
+    finisher = threading.Timer(0.3, broker.finish, args=(run_id,))
+    finisher.start()
+    try:
+        payloads = _sse_payloads(authed_client, run_id)
+    finally:
+        finisher.cancel()
+
+    stats = [p for p in payloads if p["kind"] == "stats"]
+    assert stats, f"no stats event reached the client: {payloads}"
+    assert stats[0]["data"]["percentage"] == 42
+    assert stats[0]["data"]["files"] == [{"name": "a.bin"}]
+
+
+def test_every_event_carries_a_data_field(authed_client: TestClient, settings) -> None:
+    """So the client can read it without checking whether it exists."""
+    from app.jobs.events import broker
+
+    run_id = _finished_run(settings)
+    broker._finished.pop(run_id, None)
+    broker.publish(run_id, RunEvent(kind="line", text="working"))
+
+    for payload in _sse_payloads(authed_client, run_id):
+        assert "data" in payload, payload
+
+
+def test_a_stats_record_never_reaches_the_live_log_pane() -> None:
+    """It is a progress report, not something to read. Emitting it as a log line
+    filled the pane with raw JSON and buried the lines that matter."""
+    from app.engines import parsers as p
+    from app.jobs.runner import _absorb
+
+    stats_line = '{"level":"info","msg":"  45 MiB / 2.8 GiB, 2%","stats":{"bytes":47841280}}'
+    ordinary = '{"level":"info","msg":"Copied (new)","size":10,"object":"a.txt"}'
+
+    assert _absorb(p.DryRunLog(), stats_line, 555001) is True
+    assert _absorb(p.DryRunLog(), ordinary, 555002) is False
+    assert _absorb(p.DryRunLog(), "not json at all", 555003) is False

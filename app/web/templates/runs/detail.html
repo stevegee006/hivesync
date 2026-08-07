@@ -211,7 +211,7 @@
 </dl>
 
 <p class="mt-3 text-xs text-slate-500">
-  {{ summary.get('bytes', 0) }} bytes would transfer. The destination holds
+  {{ summary.get('bytes', 0) | filesize }} would transfer. The destination holds
   {{ summary.get('dest_file_count', 0) }} files, so the
   {{ job.max_delete_pct }}% brake allows {{ summary.get('max_delete_threshold', 1) }}
   deletions.
@@ -263,7 +263,7 @@
         </td>
         <td class="px-4 py-1.5 font-mono text-xs text-slate-300">{{ change.path }}</td>
         <td class="px-4 py-1.5 text-right font-mono text-xs text-slate-500">
-          {{ change.size if change.size is not none else '' }}
+          {{ change.size | filesize }}
         </td>
       </tr>
       {% endfor %}

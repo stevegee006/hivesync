@@ -402,10 +402,14 @@ def stream_run(
         events = broker.subscribe(run_id) if live else iter(broker.backlog_for(run_id))
         for event in events:
             saw_done = saw_done or event.kind == "done"
-            payload = json.dumps({"kind": event.kind, "text": event.text})
+            # `data` carries the progress figures for a stats event. Leaving it
+            # out shipped `{"kind": "stats"}` and nothing else, so the run
+            # page's progress panel had nothing to draw and stayed hidden while
+            # a transfer was plainly running.
+            payload = json.dumps({"kind": event.kind, "text": event.text, "data": event.data})
             yield f"data: {payload}\n\n"
         if not saw_done:
-            yield f"data: {json.dumps({'kind': 'done', 'text': final})}\n\n"
+            yield f"data: {json.dumps({'kind': 'done', 'text': final, 'data': {}})}\n\n"
 
     return StreamingResponse(
         emit(),

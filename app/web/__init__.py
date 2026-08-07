@@ -14,10 +14,11 @@ import json
 import logging
 from contextlib import suppress
 from datetime import UTC, datetime, tzinfo
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -28,7 +29,7 @@ from markupsafe import Markup
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app import __version__, capabilities, csrf, notify, portable, probe, security
 from app import preferences as preferences_store
@@ -64,7 +65,7 @@ from app.models import (
     RunStatus,
     RunTrigger,
 )
-from app.preferences import NotifyTarget
+from app.preferences import Clock, NotifyTarget
 from app.schemas.connection import ConnectionCreate
 from app.schemas.credential import CredentialCreate
 from app.schemas.job import JobCreate, JobFilters
@@ -79,8 +80,34 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 router = APIRouter(include_in_schema=False)
 
 
+# Matches `static/js/format.js` exactly, including the 1024 base and the short
+# unit names. Two implementations is the cost of rendering some figures on the
+# server and some in the browser; two *different* answers for the same number is
+# not, and `test_presentation.py` pins them together.
+_BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
+
+
+def _filesize(value: int | None) -> str:
+    """A byte count a person can read. Empty for an unknown size."""
+    if value is None:
+        return ""
+    amount = float(value)
+    index = 0
+    while abs(amount) >= 1024 and index < len(_BYTE_UNITS) - 1:
+        amount /= 1024
+        index += 1
+    digits = 0 if index == 0 else 1
+    return f"{amount:.{digits}f} {_BYTE_UNITS[index]}"
+
+
 @pass_context
-def _localtime(context: Context, value: datetime | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
+def _schedule(context: Context, expression: str | None) -> str:
+    """A cron expression in words, honouring the 12/24 hour preference."""
+    return cron.describe(expression, clock=str(context.get("clock") or "24h"))
+
+
+@pass_context
+def _localtime(context: Context, value: datetime | None, fmt: str | None = None) -> str:
     """Render a stored timestamp in the configured timezone.
 
     Everything is stored in UTC, which is right, and shown in local time, which
@@ -100,6 +127,10 @@ def _localtime(context: Context, value: datetime | None, fmt: str = "%Y-%m-%d %H
     # An unknown zone must not blank out every timestamp on the page.
     with suppress(ZoneInfoNotFoundError, ValueError):
         zone = ZoneInfo(str(context.get("timezone") or "UTC"))
+    if fmt is None:
+        # %I is zero padded and there is no portable flag to strip that: %-I is
+        # glibc only and breaks on Windows, where the tests run.
+        fmt = "%Y-%m-%d %I:%M %p" if context.get("clock") == "12h" else "%Y-%m-%d %H:%M"
     return value.astimezone(zone).strftime(fmt)
 
 
@@ -129,6 +160,8 @@ def _csrf_token(context: Context) -> str:
 
 
 templates.env.filters["localtime"] = _localtime
+templates.env.filters["filesize"] = _filesize
+templates.env.filters["schedule"] = _schedule
 templates.env.globals["csrf_input"] = _csrf_input
 templates.env.globals["csrf_token"] = _csrf_token
 
@@ -145,13 +178,55 @@ _PASSWORD_ERRORS = {
 }
 
 
+@lru_cache(maxsize=1)
+def _known_timezones() -> tuple[str, ...]:
+    """Every zone this machine can resolve, for the Settings datalist.
+
+    Cached: the list is fixed for the life of the process and reading it walks
+    the tz database. Empty is a valid answer on a stripped image, and the form
+    stays usable when it is.
+    """
+    try:
+        return tuple(sorted(available_timezones()))
+    except Exception:  # pragma: no cover - depends on the tz database present
+        logger.warning("No timezone database is readable, the picker will be empty")
+        return ()
+
+
+def _presentation(request: Request) -> tuple[str, str]:
+    """The zone and clock every page renders timestamps in.
+
+    Read here rather than threaded through every context builder: there are a
+    dozen of them and a page that missed the argument would render times in a
+    different zone from the page beside it, which is the kind of wrong nobody
+    reports as a bug.
+
+    Cached on the request, and falling back to the environment on any failure.
+    A preferences problem must not blank out every timestamp in the UI.
+    """
+    cached = getattr(request.state, "presentation", None)
+    if cached is not None:
+        return cast("tuple[str, str]", cached)
+    environment = str(request.app.state.settings.timezone or "UTC")
+    resolved = (environment, "24h")
+    with suppress(Exception):
+        factory: sessionmaker[Session] = request.app.state.session_factory
+        with factory() as session:
+            stored = preferences_store.load(session)
+            resolved = (stored.display_timezone or environment, stored.clock)
+    request.state.presentation = resolved
+    return resolved
+
+
 def _base_context(request: Request) -> dict[str, Any]:
     report: BinaryReport = request.app.state.binaries
+    timezone, clock = _presentation(request)
     return {
         "request": request,
         "app_version": __version__,
         "auth_mode": request.app.state.settings.auth_mode,
-        "timezone": request.app.state.settings.timezone,
+        "timezone": timezone,
+        "clock": clock,
         "nav_active": request.url.path,
         "rclone_version": report.rclone.version,
         "lftp_version": report.lftp.version,
@@ -1030,6 +1105,11 @@ def _settings_context(
     context["webhook_configured"] = bool(preferences.notify_webhook_url)
     context["max_concurrent_runs"] = settings.max_concurrent_runs
     context["metrics_token_set"] = bool(settings.metrics_token)
+    context["environment_timezone"] = settings.timezone
+    # A datalist rather than a select: a typed zone still validates server side,
+    # and an empty list on a machine with no tz database degrades to a plain
+    # text box instead of an empty dropdown with no way to enter anything.
+    context["timezones"] = _known_timezones()
     context["message"] = message
     context["error"] = error
     context["test_result"] = test_result
@@ -1081,6 +1161,10 @@ async def save_settings_form(request: Request, session: Session = Depends(get_se
             run_history_keep=number("run_history_keep"),
             log_retention_days=number("log_retention_days"),
             log_max_total_mb=number("log_max_total_mb"),
+            # Always sent, and an empty value means "follow TZ" rather than
+            # "leave alone", so this one is not coerced to None when blank.
+            display_timezone=(form.get("display_timezone") or "").strip(),
+            clock=cast("Clock", form.get("clock") or "24h"),
         )
         preferences_store.save(
             session, apply_settings_update(preferences_store.load(session), update)

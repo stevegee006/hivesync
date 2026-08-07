@@ -376,26 +376,36 @@ def _consume(running: process.StreamingProcess, run_id: int, log_path: Path) -> 
     with log_path.open("a", encoding="utf-8") as handle:
         for line in running.lines():
             handle.write(line + "\n")
-            _absorb(observed, line, run_id)
+            if _absorb(observed, line, run_id):
+                # A stats record. It drives the progress panel and the activity
+                # strip, and in the live pane it is a wall of raw JSON that
+                # buries the lines someone is actually reading. The log file on
+                # disk still gets it.
+                continue
             _emit(run_id, "line", line)
     return observed
 
 
-def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> None:
-    """Fold one live JSON log line into the running totals."""
+def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> bool:
+    """Fold one live JSON log line into the running totals.
+
+    Returns True when the line was a stats record, which the caller keeps out
+    of the live log pane: it is a progress report, not something to read.
+    """
     stripped = line.strip()
     if not stripped.startswith("{"):
-        return
+        return False
     try:
         payload = json.loads(stripped)
     except ValueError:
-        return
+        return False
     if not isinstance(payload, dict):
-        return
+        return False
 
     # A periodic progress report rather than a per-file event. rclone emits one
-    # on the --stats interval; it drives the dashboard and is deliberately kept
-    # out of the line backlog, which exists for the log a person reads.
+    # on the --stats interval. It drives the progress panel and the activity
+    # strip, and is kept out of both the log backlog and the live pane, which
+    # exist for the log a person reads.
     stats = payload.get("stats")
     if isinstance(stats, dict):
         parsed = parsers.parse_stats(stats)
@@ -433,7 +443,7 @@ def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> None:
                 },
             ),
         )
-        return
+        return True
 
     obj = payload.get("object")
     message = str(payload.get("msg", ""))
@@ -476,6 +486,8 @@ def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> None:
             observed.max_delete_hit = True
         detail = f"{obj}: {message}" if isinstance(obj, str) and obj else message
         observed.errors.append(detail.strip())
+
+    return False
 
 
 def _bytes_transferred(observed: parsers.DryRunLog, copied: list[parsers.PlannedOperation]) -> int:
@@ -598,7 +610,8 @@ def _consume_bisync(
         for line in running.lines():
             handle.write(line + "\n")
             lines.append(line)
-            _absorb(observed, line, run_id)
+            if _absorb(observed, line, run_id):
+                continue  # See the note in the one way reader.
             _emit(run_id, "line", line)
     return observed, "\n".join(lines)
 
