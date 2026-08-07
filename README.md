@@ -119,7 +119,7 @@ Nothing is built, so no checkout is needed:
 ```yaml
 services:
   hivesync:
-    image: geaves006/hivesync:0.2.0
+    image: geaves006/hivesync:latest
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -170,21 +170,21 @@ Three are published for every release:
 
 | Tag | Moves | Use it when |
 |---|---|---|
-| `0.2.0` | never | you want the container to run the same code until you decide otherwise |
+| `0.2.1` | never | you want the container to run the same code until you decide otherwise |
 | `0.2` | on patch releases within 0.2 | you want fixes without a feature change |
 | `latest` | on every release | you would rather be current than stable |
 
-The examples here pin an exact version, and that is the recommendation: this is
-a program that deletes files on a schedule, and `latest` means the next
-`docker compose pull`, including one a watchtower-style updater runs unattended
-at 3am, can change how it behaves without you reading anything first. A sync
-tool changing behaviour while nobody is watching is the failure this whole
-program is arranged to avoid.
+The examples use `latest`, which is the right default on a home LAN: you get
+fixes without editing anything, and there is no version number here to keep
+current.
 
-`latest` is a reasonable choice on a home LAN where you would rather not think
-about it. Substitute it in the examples if that is you. Check the tags on
-[Docker Hub](https://hub.docker.com/r/geaves006/hivesync/tags) for the current
-version, since the number written here is only current as of this release.
+**Worth knowing before leaving it on an exposed or unattended host.** This
+program deletes files on a schedule, and `latest` means the next
+`docker compose pull`, including one a watchtower-style updater runs at 3am, can
+change how it behaves without anyone reading anything first. If that matters for
+your setup, substitute an exact version in the examples and upgrade
+deliberately. Current tags are on
+[Docker Hub](https://hub.docker.com/r/geaves006/hivesync/tags).
 
 **Compose passes only the variables listed in `environment:`.** Putting one in
 `.env` does nothing on its own: `.env` feeds variable substitution, not the
@@ -215,7 +215,7 @@ section rather than being interpolated from disk.
    ```yaml
    services:
      hivesync:
-       image: geaves006/hivesync:0.2.0
+       image: geaves006/hivesync:latest
        restart: unless-stopped
        ports:
          - "8080:8080"
@@ -637,7 +637,7 @@ Then build and push multi-arch, amd64 and arm64:
 make push
 ```
 
-This publishes `geaves006/hivesync:0.2.0` and `:latest`. Override the namespace
+This publishes `geaves006/hivesync:0.2.1` and `:latest`. Override the namespace
 with `make push DOCKERHUB_NAMESPACE=other`.
 
 A first push creates the Docker Hub repository as **public** by default. Create it
@@ -667,7 +667,7 @@ Read and Write scope.
 Then publishing is a tag:
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.2.1 && git push origin v0.2.1
 ```
 
 The workflow runs on every push to `main` and every pull request as well, but

@@ -1,6 +1,6 @@
 [project]
 name = "hivesync"
-version = "0.2.0"
+version = "0.2.1"
 description = "Dockerized file sync orchestrator that drives rclone and lftp"
 requires-python = ">=3.12"
 dependencies = [
