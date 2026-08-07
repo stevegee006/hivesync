@@ -158,7 +158,7 @@ services:
       PUID: "1000"
       PGID: "1000"
     volumes:
-      - ./config:/config
+      - [localdir/config]:/config
       # Local filesystem connections mount under /data. Add your own, read only
       # where the job only reads from them.
       # - /mnt/tank/media:/data/media
