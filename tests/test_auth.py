@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from app import security
 from app.config import Settings
@@ -211,15 +212,20 @@ def test_no_password_hash_is_ever_serialized(authed_client: TestClient) -> None:
     assert NEW_PASSWORD not in body
 
 
-def test_bootstrap_refuses_without_an_admin_password(tmp_path: Path) -> None:
-    """SPEC section 14 would generate one. Printing a generated password is the
-    only way to deliver it, and CLAUDE.md rule 5 forbids a secret in a log line,
-    so this fails with instructions instead."""
+def test_starting_without_an_admin_password_leaves_the_instance_unclaimed(
+    tmp_path: Path,
+) -> None:
+    """It used to refuse to start. The first visitor now creates the account, so
+    the variable is optional and the instance simply waits."""
     settings: Settings = make_settings(tmp_path, admin_password=None)
     create_schema(settings)
-    with pytest.raises(security.BootstrapError) as excinfo:
-        create_app(settings)
-    assert "HIVESYNC_ADMIN_PASSWORD" in str(excinfo.value)
+
+    app = create_app(settings)
+
+    factory = sessionmaker(bind=create_db_engine(settings))
+    with factory() as session:
+        assert security.needs_setup(session) is True
+    assert app is not None
 
 
 def test_bootstrap_refuses_a_weak_admin_password(tmp_path: Path) -> None:

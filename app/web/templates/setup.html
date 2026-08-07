@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Set up HiveSync{% endblock %}
+
+{# No chrome: there is no account yet, so a nav full of links to pages that
+   would bounce straight back here would only be confusing. #}
+{% block chrome %}{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-md py-10">
+  <div class="flex items-center gap-2">
+    <img src="/static/icon.svg" alt="" width="32" height="32" class="h-8 w-8">
+    <h1 class="text-xl font-semibold tracking-tight text-slate-100">HiveSync</h1>
+  </div>
+
+  <h2 class="mt-6 text-lg font-medium text-slate-100">Create your account</h2>
+  <p class="mt-1 text-sm text-slate-400">
+    This instance has no account yet. The account you create here is an
+    administrator: it can run and delete jobs, and read every connection.
+  </p>
+
+  {# Said plainly rather than buried. Until this form is submitted, anybody who
+     can reach this address can complete it instead. #}
+  <div class="mt-4 rounded-lg border border-amber-700 bg-amber-950/40 px-4 py-3 text-xs text-amber-100">
+    Until you finish, anyone who can reach this address can create the account
+    instead of you. If this instance is reachable from the internet, finish now,
+    then check the account name is the one you chose.
+  </div>
+
+  {% if error %}
+  <p class="mt-4 rounded-lg border border-red-800 bg-red-950/50 px-4 py-3 text-sm text-red-200">
+    {{ error }}
+  </p>
+  {% endif %}
+
+  <form method="post" action="/setup" class="mt-6 space-y-4">
+    {{ csrf_input() }}
+
+    <div>
+      <label for="username" class="block text-sm text-slate-400">Username</label>
+      <input id="username" name="username" value="{{ username or 'admin' }}"
+             autocomplete="username" required autofocus
+             class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+    </div>
+
+    <div>
+      <label for="password" class="block text-sm text-slate-400">Password</label>
+      <input id="password" name="password" type="password" required
+             autocomplete="new-password" minlength="{{ min_password_length }}"
+             class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+      <p class="mt-1 text-xs text-slate-500">
+        At least {{ min_password_length }} characters. It is stored hashed with
+        argon2id and cannot be recovered, only reset.
+      </p>
+    </div>
+
+    <div>
+      <label for="confirm" class="block text-sm text-slate-400">Password again</label>
+      <input id="confirm" name="confirm" type="password" required
+             autocomplete="new-password"
+             class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+    </div>
+
+    <button type="submit"
+            class="w-full rounded bg-slate-100 px-3 py-2 text-sm font-medium text-slate-900 hover:bg-white">
+      Create account and sign in
+    </button>
+  </form>
+
+  <p class="mt-6 text-xs text-slate-500">
+    This is separate from <span class="font-mono">HIVESYNC_SECRET_KEY</span>,
+    which encrypts stored credentials. Changing this password does not affect
+    that key, and losing that key is not fixed by resetting this password.
+  </p>
+</div>
+{% endblock %}

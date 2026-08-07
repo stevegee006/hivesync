@@ -244,6 +244,55 @@ def _box(request: Request) -> SecretBox:
 # --------------------------------------------------------------------------
 
 
+@router.get("/setup", response_class=HTMLResponse)
+def setup_page(request: Request, session: Session = Depends(get_session)) -> Any:
+    """The first-run wizard. Only reachable while the instance is unclaimed."""
+    if not security.needs_setup(session):
+        return RedirectResponse(url="/login", status_code=303)
+    context = _base_context(request)
+    context["min_password_length"] = security.MIN_PASSWORD_LENGTH
+    return templates.TemplateResponse(request, "setup.html", context)
+
+
+@router.post("/setup", response_class=HTMLResponse)
+async def setup_form(request: Request, session: Session = Depends(get_session)) -> Any:
+    """Create the first account and sign it in.
+
+    Not exempt from CSRF: the middleware covers this like any other state
+    changing post, and the page mints a token before there is a user to attach
+    one to, exactly as the login page does.
+    """
+    if not security.needs_setup(session):
+        return RedirectResponse(url="/login", status_code=303)
+
+    form = await request.form()
+    username = str(form.get("username") or "").strip()
+    password = str(form.get("password") or "")
+    confirm = str(form.get("confirm") or "")
+
+    def again(error: str) -> Any:
+        context = _base_context(request)
+        context["min_password_length"] = security.MIN_PASSWORD_LENGTH
+        context["error"] = error
+        # Handed back so it does not have to be retyped. The password is not.
+        context["username"] = username
+        return templates.TemplateResponse(request, "setup.html", context, status_code=400)
+
+    if password != confirm:
+        return again("The two passwords do not match.")
+
+    try:
+        user = security.create_first_admin(session, username, password)
+    except security.BootstrapError as exc:
+        return again(str(exc))
+
+    # Rotate before attaching the session, so a token fixed beforehand does not
+    # survive the privilege change. Same reasoning as login.
+    csrf.rotate(request)
+    security.start_session(request, user)
+    return RedirectResponse(url="/", status_code=303)
+
+
 @router.get("/login", response_class=HTMLResponse)
 def login_page(
     request: Request,
@@ -251,6 +300,8 @@ def login_page(
     next: str | None = None,
     session: Session = Depends(get_session),
 ) -> Any:
+    if security.needs_setup(session):
+        return RedirectResponse(url="/setup", status_code=303)
     if security.current_user(request, session) is not None:
         return RedirectResponse(url="/", status_code=303)
     context = _base_context(request)

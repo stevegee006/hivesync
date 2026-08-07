@@ -192,9 +192,11 @@ Each of these is also explained in a comment at the site.
    any future code path could bypass.
 6. One active run per job is a partial unique index, not an application check.
 7. Section 14 says a bootstrap admin password is generated when
-   `HIVESYNC_ADMIN_PASSWORD` is unset. HiveSync refuses to start instead: the only
-   way to deliver a generated password is to print it, and rule 5 forbids a secret
-   in a log line. The message includes a suggestion to copy.
+   `HIVESYNC_ADMIN_PASSWORD` is unset. Nothing is generated: the only way to
+   deliver a generated password is to print it, and rule 5 forbids a secret in a
+   log line. **Superseded after M9**: HiveSync no longer refuses to start either.
+   Without the variable it starts unclaimed and the first visitor creates the
+   account from a setup wizard. See the note below.
 8. A secret key fingerprint is stored in `setting` at first boot, so a swapped key
    is reported at startup rather than as an opaque decrypt failure mid-run.
 9. `HIVESYNC_AUTH_MODE=trusted_header` refused to start from M0 to M7. A half
@@ -304,6 +306,37 @@ The favicon and the header logo are **one file**, `static/icon.svg`, so the tab
 and the header cannot drift. The hole in the honeycomb is punched with
 `fill-rule="evenodd"` rather than painted in a background colour: a tab strip can
 be light or dark, and a faked hole would show as a blob on one of them.
+
+### First-run setup wizard, added after M9
+
+`HIVESYNC_ADMIN_PASSWORD` was mandatory: no variable, no start. That is a poor
+first experience and it put a password in a compose file, where it stays long
+after it is needed. An instance now starts unclaimed and the first visitor
+creates the account in the browser.
+
+**The tradeoff is real and is not hidden.** While unclaimed, anyone who can
+reach the address can complete the wizard. That window did not exist before,
+because an account always existed from the first moment. Three things follow:
+
+- The wizard closes permanently the instant an account exists. `needs_setup` is
+  a count of the user table, checked on entry to both the GET and the POST.
+- `HIVESYNC_ADMIN_PASSWORD` still works and is the documented answer for anyone
+  exposing the instance from the moment it starts. It closes the window
+  entirely, and the account it creates keeps `must_change_password` because a
+  value out of a compose file has been sitting in a file. An account chosen in
+  the browser a moment ago does not, so the wizard does not create an account
+  and immediately demand a new password for it.
+- Startup logs a warning naming the risk, and the wizard page says it too.
+
+**The wizard is not exempt from CSRF.** Without a token there, a page on another
+site could claim a freshly started instance and the operator would never know.
+The page mints a token before there is a user to attach one to, exactly as the
+login page does, and the token is rotated before the session is attached.
+
+Two people submitting at the same moment is handled by re-checking the count
+*after* the insert, not only before: both would see an empty table, and the
+loser has to be told the instance is taken rather than quietly given a second
+admin. SQLite serialises writers, so the loser's own commit reveals the race.
 
 ### M1 acceptance status, verified 2026-08-05
 

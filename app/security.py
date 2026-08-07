@@ -25,7 +25,6 @@ import contextlib
 import hmac
 import ipaddress
 import logging
-import secrets
 
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, InvalidHashError, VerifyMismatchError
@@ -220,15 +219,78 @@ class BootstrapError(Exception):
     """The initial admin account cannot be created from the current environment."""
 
 
-def bootstrap_admin(session: Session, settings: Settings) -> bool:
-    """Create the initial admin if the user table is empty. Returns True if created.
+def needs_setup(session: Session) -> bool:
+    """True when no account exists yet, so the instance is unclaimed.
 
-    SPEC section 14 describes generating a password when HIVESYNC_ADMIN_PASSWORD
-    is unset. This refuses to start instead, because the only way to hand a
-    generated password to the operator is to print it, and CLAUDE.md rule 5 says
-    no secret reaches a log line. Failing with an actionable message is also what
-    rule 8 asks for. The account is still flagged must_change_password so the
-    bootstrap value cannot become the permanent one.
+    While this holds, every page redirects to the setup wizard and the wizard is
+    reachable without signing in, because there is nothing to sign in to.
+    """
+    return not session.scalar(select(func.count()).select_from(User))
+
+
+def create_first_admin(session: Session, username: str, password: str) -> User:
+    """Claim an unclaimed instance. Raises BootstrapError if it is already taken.
+
+    The emptiness check is repeated **after** the insert rather than only
+    before. Two people loading the wizard at the same moment would both see an
+    empty table, and the first to submit should be the only one who gets an
+    account: the second must be told the instance is taken rather than quietly
+    given a second admin. SQLite serialises writers, so the loser's own commit
+    is what reveals the race.
+    """
+    if not needs_setup(session):
+        raise BootstrapError(
+            "This instance already has an account, so it cannot be set up again. "
+            "Sign in, or reset the password from the command line."
+        )
+
+    weakness = validate_password_strength(password)
+    if weakness:
+        raise BootstrapError(weakness)
+
+    name = username.strip()
+    if not name:
+        raise BootstrapError("A username is required.")
+
+    user = User(
+        username=name,
+        password_hash=hash_password(password),
+        role=UserRole.admin,
+        # Chosen by a person just now, so there is nothing to force a change of.
+        must_change_password=False,
+    )
+    session.add(user)
+    session.commit()
+
+    total = session.scalar(select(func.count()).select_from(User))
+    if total != 1:
+        session.delete(user)
+        session.commit()
+        raise BootstrapError(
+            "Another account was created at the same moment, so this one was "
+            "discarded. Sign in with the account that was created first."
+        )
+
+    logger.info("Admin account created from the setup wizard", extra={"username": name})
+    return user
+
+
+def bootstrap_admin(session: Session, settings: Settings) -> bool:
+    """Pre-provision the initial admin from the environment. True if created.
+
+    Optional. Without `HIVESYNC_ADMIN_PASSWORD` the instance starts unclaimed
+    and the first visitor completes the setup wizard, which is the ordinary
+    path. This exists for two cases the wizard does not serve: an automated
+    deployment that wants an account to exist before anyone can reach the port,
+    and anyone exposing the instance publicly, where the window between starting
+    the container and finishing the wizard is a window in which a stranger could
+    claim it.
+
+    SPEC section 14 describes generating a password when the variable is unset.
+    Nothing is generated: the only way to hand a generated password to the
+    operator is to print it, and CLAUDE.md rule 5 says no secret reaches a log
+    line. The account is flagged must_change_password so a value that has been
+    sitting in a compose file cannot become the permanent one.
     """
     existing = session.scalar(select(func.count()).select_from(User))
     if existing:
@@ -236,14 +298,13 @@ def bootstrap_admin(session: Session, settings: Settings) -> bool:
 
     password = settings.admin_password
     if not password:
-        raise BootstrapError(
-            "No admin account exists yet and HIVESYNC_ADMIN_PASSWORD is not set, "
-            "so there is no way to sign in. Set HIVESYNC_ADMIN_PASSWORD to a value "
-            f"of at least {MIN_PASSWORD_LENGTH} characters and start again. You "
-            "will be prompted to change it at first login, and the variable can be "
-            "removed afterwards. A suggestion: "
-            f"{secrets.token_urlsafe(18)}"
+        logger.warning(
+            "No account exists yet. The first visitor to this instance will be "
+            "asked to create one, and anyone who can reach it can be that visitor. "
+            "Complete the setup before exposing it, or set HIVESYNC_ADMIN_PASSWORD "
+            "to create the account up front."
         )
+        return False
 
     weakness = validate_password_strength(password)
     if weakness:

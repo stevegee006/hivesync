@@ -17,8 +17,10 @@ services:
     environment:
       # Required. Generate with `make secret-key` and put it in .env.
       HIVESYNC_SECRET_KEY: ${HIVESYNC_SECRET_KEY:?set HIVESYNC_SECRET_KEY in .env, see .env.example}
-      # Used once, to create the admin account. A password change is forced at
-      # first login, after which this can be removed.
+      # Optional. Left empty, the first visitor creates the account from the
+      # setup wizard. Set it to create the account at startup instead, which
+      # closes the window in which an unclaimed instance is reachable. A
+      # password change is forced at first login.
       HIVESYNC_ADMIN_USER: ${HIVESYNC_ADMIN_USER:-admin}
       HIVESYNC_ADMIN_PASSWORD: ${HIVESYNC_ADMIN_PASSWORD:-}
       HIVESYNC_AUTH_MODE: ${HIVESYNC_AUTH_MODE:-local}

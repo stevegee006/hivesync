@@ -93,15 +93,22 @@ docker run --rm python:3.12-slim sh -c "pip install -q cryptography && python -c
 
 From a checkout, `make secret-key` does the same thing.
 
-Set `HIVESYNC_ADMIN_PASSWORD` in `.env` to anything at least 12 characters. You
-will be forced to change it at first login, after which the variable can be
-removed. Then:
+Then:
 
 ```bash
 docker compose up --build
 ```
 
-Open http://localhost:8080 and sign in.
+Open http://localhost:8080. The first visit shows a setup wizard: choose a
+username and password, and you are signed in. There is no default account and no
+password to look up.
+
+**The wizard is open until it is used.** Anyone who can reach the address before
+you do can create that account instead of you, so finish the setup before
+exposing the instance. If it will be reachable from the internet from the moment
+it starts, set `HIVESYNC_ADMIN_PASSWORD` in `.env` instead: the account is then
+created at startup, the wizard never appears, and you are prompted to change the
+password at first login.
 
 ## Running the published image
 
@@ -119,10 +126,12 @@ services:
     environment:
       # Required. Losing this key means losing every stored credential.
       HIVESYNC_SECRET_KEY: "paste-the-generated-key-here"
-      # Used once, to create the admin account. A password change is forced at
-      # first login, after which this line can be removed.
-      HIVESYNC_ADMIN_USER: admin
-      HIVESYNC_ADMIN_PASSWORD: "at-least-12-characters"
+      # Optional. Without it the first visitor creates the account from the
+      # setup wizard, which is the ordinary path. Set it to create the account
+      # at startup instead, so there is no window in which an unclaimed
+      # instance is reachable.
+      # HIVESYNC_ADMIN_USER: admin
+      # HIVESYNC_ADMIN_PASSWORD: "at-least-12-characters"
       TZ: America/Denver
       PUID: "1000"
       PGID: "1000"
@@ -153,8 +162,29 @@ Then:
 docker compose up -d
 ```
 
-Pin the version tag rather than `:latest`. `latest` moves under you on the next
-release, and this is a program that deletes files on a schedule.
+Then open `http://<host>:8080` and complete the setup wizard.
+
+### Which tag
+
+Three are published for every release:
+
+| Tag | Moves | Use it when |
+|---|---|---|
+| `0.2.0` | never | you want the container to run the same code until you decide otherwise |
+| `0.2` | on patch releases within 0.2 | you want fixes without a feature change |
+| `latest` | on every release | you would rather be current than stable |
+
+The examples here pin an exact version, and that is the recommendation: this is
+a program that deletes files on a schedule, and `latest` means the next
+`docker compose pull`, including one a watchtower-style updater runs unattended
+at 3am, can change how it behaves without you reading anything first. A sync
+tool changing behaviour while nobody is watching is the failure this whole
+program is arranged to avoid.
+
+`latest` is a reasonable choice on a home LAN where you would rather not think
+about it. Substitute it in the examples if that is you. Check the tags on
+[Docker Hub](https://hub.docker.com/r/geaves006/hivesync/tags) for the current
+version, since the number written here is only current as of this release.
 
 **Compose passes only the variables listed in `environment:`.** Putting one in
 `.env` does nothing on its own: `.env` feeds variable substitution, not the
@@ -191,8 +221,6 @@ section rather than being interpolated from disk.
          - "8080:8080"
        environment:
          HIVESYNC_SECRET_KEY: ${HIVESYNC_SECRET_KEY}
-         HIVESYNC_ADMIN_USER: ${HIVESYNC_ADMIN_USER}
-         HIVESYNC_ADMIN_PASSWORD: ${HIVESYNC_ADMIN_PASSWORD}
          TZ: ${TZ}
          PUID: ${PUID}
          PGID: ${PGID}
@@ -206,14 +234,13 @@ section rather than being interpolated from disk.
 
    ```
    HIVESYNC_SECRET_KEY=the-generated-key
-   HIVESYNC_ADMIN_USER=admin
-   HIVESYNC_ADMIN_PASSWORD=at-least-12-characters
    TZ=America/Denver
    PUID=1000
    PGID=1000
    ```
 
-4. **Deploy the stack**, then open `http://<host>:8080`.
+4. **Deploy the stack**, then open `http://<host>:8080` and complete the setup
+   wizard.
 
 Notes specific to Portainer:
 
@@ -225,9 +252,12 @@ Notes specific to Portainer:
   `/config` at start, but it cannot chown a path the host has made read only.
   `/data` is deliberately never chowned: recursively changing ownership on a
   mounted NAS share would take hours across millions of inodes.
-- **Remove `HIVESYNC_ADMIN_PASSWORD` after the first login** and redeploy. It is
-  only read when the user table is empty, but leaving it in the stack definition
-  leaves a password on a screen.
+- **There is no admin password to configure.** The first visit creates the
+  account. If the host is reachable from outside your network, add
+  `HIVESYNC_ADMIN_PASSWORD` as a stack environment variable so the account
+  exists before anyone can reach the port, then remove it and redeploy once you
+  have signed in: it is only read when there are no accounts, but leaving it in
+  the stack definition leaves a password on a screen.
 - **Upgrading** is editing the image tag and redeploying. Portainer pulls the new
   image and recreates the container; `/config` survives because it is a bind
   mount.

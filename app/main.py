@@ -19,13 +19,13 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import __version__, binaries, crypto, csrf, filter_presets, security, web
@@ -246,6 +246,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Response:
         if request.url.path.startswith("/api/"):
             return JSONResponse({"detail": "Authentication required."}, status_code=401)
+        # An unclaimed instance has nothing to sign in to, so sending someone to
+        # a login form would be a dead end: no account exists and none can be
+        # created from there.
+        factory: sessionmaker[Session] = request.app.state.session_factory
+        with factory() as session, suppress(Exception):
+            if security.needs_setup(session):
+                return RedirectResponse(url="/setup", status_code=303)
         target = request.url.path
         if request.url.query:
             target = f"{target}?{request.url.query}"
