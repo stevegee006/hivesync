@@ -581,3 +581,60 @@ def test_the_scrollbar_gutter_is_reserved_on_every_page() -> None:
     assert "scrollbar-gutter: stable" in css
     # And a fallback, so a browser without it still gets a constant width.
     assert "overflow-y: scroll" in css
+
+
+# --------------------------------------------------------------------------
+# The dashboard keeps itself current
+# --------------------------------------------------------------------------
+
+
+def test_the_dashboard_refreshes_itself(authed_client: TestClient, settings) -> None:
+    """It is a snapshot of state that changes with nobody touching the page: a
+    scheduled run starts, a run finishes. Without this a finished job still sat
+    under "Running now" until someone pressed reload."""
+    _card_job(settings, running=True)
+
+    page = authed_client.get("/").text
+
+    assert 'id="dashboard-body"' in page
+    assert 'hx-get="/"' in page
+    assert 'hx-select="#dashboard-body"' in page
+
+
+def test_the_poll_tightens_while_a_run_is_active(authed_client: TestClient, settings) -> None:
+    """Polling the whole dashboard every few seconds forever is waste on an idle
+    instance. The server picks the interval on each swap, so it adjusts itself."""
+    _card_job(settings, running=True)
+    busy = authed_client.get("/").text
+    assert 'hx-trigger="every 5s"' in busy
+
+
+def test_the_poll_relaxes_when_nothing_is_running(authed_client: TestClient, settings) -> None:
+    _card_job(settings, running=False)
+    idle = authed_client.get("/").text
+    assert 'hx-trigger="every 30s"' in idle
+
+
+def test_the_activity_strip_is_outside_the_swapped_region(authed_client: TestClient) -> None:
+    """Swapping an element that contains a live pane is what made the run page
+    look like it was refreshing on a loop. The strip must survive every swap, so
+    it has to sit outside the element the poll replaces."""
+    page = authed_client.get("/").text
+
+    swapped = page.index('id="dashboard-body"')
+    end_of_main = page.index("</main>")
+    strip = page.index('id="activity-strip"')
+
+    assert swapped < end_of_main, "the swapped element should be inside main"
+    assert strip > end_of_main, "the activity strip must not be inside the swapped element"
+
+
+def test_a_poll_that_lands_on_the_login_page_does_not_blank_the_dashboard() -> None:
+    """When a session expires the poll follows the redirect to /login, where
+    there is no #dashboard-body to select, and htmx would swap in nothing and
+    leave an empty page. The guard reloads instead, so the reader gets the login
+    form rather than a blank screen."""
+    base = Path("app/web/templates/base.html").read_text(encoding="utf-8")
+
+    assert "htmx:beforeSwap" in base
+    assert "/login" in base

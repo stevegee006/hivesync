@@ -325,6 +325,20 @@
   {% endif %}
 
   <script>
+    // A polling swap that lands on the login page has nothing to select, so
+    // htmx would replace the element with nothing and leave a blank screen.
+    // That is what an expired session looks like from a page that refreshes
+    // itself. Reload instead, so the reader gets the login form.
+    document.body.addEventListener("htmx:beforeSwap", function (event) {
+      var url = event.detail.xhr && event.detail.xhr.responseURL;
+      if (url && url.indexOf("/login") !== -1) {
+        event.detail.shouldSwap = false;
+        window.location.reload();
+      }
+    });
+  </script>
+
+  <script>
     // Close the account menu when the page is clicked elsewhere, or on Escape.
     // The menu works without this; it just needs a second click on the icon.
     (function () {

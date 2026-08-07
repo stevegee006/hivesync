@@ -2,6 +2,19 @@
 {% block title %}HiveSync{% endblock %}
 
 {% block content %}
+{# The dashboard is a snapshot of state that changes without the reader doing
+   anything: a scheduled run starts, a run finishes, the next fire time passes.
+   Without this it stayed as rendered until someone pressed reload, so a job
+   that had finished still sat under "Running now".
+
+   The interval is decided by the server on each swap, so it tightens while
+   something is running and relaxes when nothing is. The activity strip lives in
+   base.html, outside this element, so the poll cannot wipe it: swapping an
+   element that contains a live pane is exactly what made the run page look like
+   it was refreshing on a loop. #}
+<div id="dashboard-body"
+     hx-get="/" hx-trigger="every {{ '5s' if running else '30s' }}"
+     hx-select="#dashboard-body" hx-target="#dashboard-body" hx-swap="outerHTML">
 <div class="flex items-baseline justify-between">
   <h1 class="text-xl font-semibold tracking-tight text-slate-100">Jobs</h1>
   <a href="/jobs/new"
@@ -147,5 +160,5 @@
   {% endfor %}
 </div>
 {% endif %}
-
+</div>
 {% endblock %}
