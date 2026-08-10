@@ -661,3 +661,95 @@ def test_a_live_bisync_run_reports_its_own_brake() -> None:
 
     assert '"bidirectional": True' in summary
     assert '"max_delete_threshold": job.max_delete_pct' in summary
+
+
+# --------------------------------------------------------------------------
+# The run history on the job page
+# --------------------------------------------------------------------------
+
+
+def _job_with_runs(settings) -> int:
+    from app.models import JobRun, RunMode, RunStatus, RunTrigger
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="hs", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="hd", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(
+        name="Historied", source_connection_id=source.id, dest_connection_id=dest.id, filters={}
+    )
+    session.add(job)
+    session.commit()
+    when = datetime(2026, 8, 10, 22, 38, tzinfo=UTC)
+    for mode in (RunMode.live, RunMode.dry_run):
+        session.add(
+            JobRun(
+                job_id=job.id,
+                trigger=RunTrigger.manual,
+                mode=mode,
+                status=RunStatus.success,
+                started_at=when,
+                finished_at=when,
+                files_transferred=1,
+                files_deleted=0,
+            )
+        )
+    session.commit()
+    return job.id
+
+
+def test_the_run_history_uses_the_configured_timezone(authed_client: TestClient, settings) -> None:
+    """It was the one table calling strftime directly, so it showed raw UTC and
+    disagreed with the same run on the dashboard by the whole offset."""
+    factory = sessionmaker(bind=create_db_engine(settings))
+    with factory() as session:
+        stored = preferences_store.load(session)
+        stored.display_timezone = "America/Denver"
+        preferences_store.save(session, stored)
+
+    job_id = _job_with_runs(settings)
+    page = authed_client.get(f"/jobs/{job_id}").text
+
+    # 22:38 UTC is 16:38 in Denver on that date.
+    assert "16:38" in page
+    assert "22:38" not in page
+
+
+def test_a_finished_live_run_is_not_described_in_the_future_tense(
+    authed_client: TestClient, settings
+) -> None:
+    """Every successful run said "1 to transfer, 0 to delete", so a sync that had
+    already moved a file read like a plan it had not carried out yet."""
+    job_id = _job_with_runs(settings)
+
+    page = authed_client.get(f"/jobs/{job_id}").text
+
+    assert "1 transferred, 0 deleted" in page
+    assert "1 would transfer, 0 would delete" in page
+    assert "to transfer" not in page
+
+
+def test_a_bidirectional_live_run_reports_what_it_reconciled() -> None:
+    """It showed New 0 and Updated 0 however much it moved, because the cards
+    read `new`/`updated` and the bisync summary only had a per-side breakdown.
+    The same defect as the one way summary, fixed in only one of the two."""
+    runner = Path("app/jobs/runner.py").read_text(encoding="utf-8")
+
+    marker = runner.index('"resync": run.is_resync')
+    start = runner.rindex("run.summary = {", 0, marker)
+    summary = runner[start : runner.index("\n    }", start)]
+
+    assert '"new": deltas.path1_new + deltas.path2_new' in summary
+    assert '"updated": deltas.path1_modified + deltas.path2_modified' in summary
+    assert '"bytes": run.bytes_transferred' in summary
+    # Not invented: bisync does not report files it left alone.
+    assert '"unchanged"' not in summary
+
+
+def test_unchanged_is_a_dash_rather_than_a_zero_for_a_bidirectional_run() -> None:
+    """A measurement that was never taken must not render as one that was."""
+    template = (TEMPLATE_DIR / "runs" / "detail.html").read_text(encoding="utf-8")
+
+    assert "mdash" in template
+    assert "summary.get('bidirectional')" in template

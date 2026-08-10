@@ -576,11 +576,21 @@
         </td>
         <td class="px-4 py-2 text-xs text-slate-400">{{ run.mode.value }}</td>
         <td class="px-4 py-2 font-mono text-xs text-slate-500">
-          {{ run.started_at.strftime('%Y-%m-%d %H:%M') if run.started_at else 'queued' }}
+          {# The localtime filter, not strftime: this table was the one place
+             showing raw UTC, so a run listed here disagreed with the same run
+             on the dashboard by the whole offset. It also honours the 12 or 24
+             hour preference, which strftime cannot see. #}
+          {% if run.started_at %}{{ run.started_at | localtime }}{% else %}queued{% endif %}
         </td>
         <td class="px-4 py-2 text-xs text-slate-400">
           {% if run.status.value == 'success' %}
-            {{ run.files_transferred }} to transfer, {{ run.files_deleted }} to delete
+            {# A dry run reports what would happen; a live run has done it.
+               Both said "to transfer", so a completed sync read like a plan. #}
+            {% if run.mode.value == 'dry_run' %}
+            {{ run.files_transferred }} would transfer, {{ run.files_deleted }} would delete
+            {% else %}
+            {{ run.files_transferred }} transferred, {{ run.files_deleted }} deleted
+            {% endif %}
           {% elif run.summary and run.summary.get('error') %}
             {{ run.summary['error'] | truncate(80) }}
           {% endif %}

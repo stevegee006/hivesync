@@ -196,16 +196,24 @@
 {% endfor %}
 
 <dl class="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
+{# bisync does not report how many files it left alone, so a zero there would be
+   an invention rather than a measurement: a live bidirectional run shows a dash
+   instead. A dry run of one does count them.
+
+   Set above the loop because Jinja has no comments inside an expression, and a
+   {# #} placed within the list below raises at render time rather than at
+   startup, so it 500s every page that uses this template. #}
+  {% set unknown = '&mdash;' if summary.get('bidirectional') else 0 %}
   {% for label, value, tone in [
       ('New', summary.get('new', 0), 'text-emerald-300'),
       ('Updated', summary.get('updated', 0), 'text-sky-300'),
       ('Deleted', summary.get('deleted', 0), 'text-red-300'),
-      ('Unchanged', summary.get('unchanged', 0), 'text-slate-400'),
+      ('Unchanged', summary.get('unchanged', unknown), 'text-slate-400'),
       ('Errors', run.errors_count, 'text-amber-300')
   ] %}
   <div class="rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-3">
     <dt class="text-xs uppercase tracking-wide text-slate-500">{{ label }}</dt>
-    <dd class="mt-1 font-mono text-lg {{ tone }}">{{ value }}</dd>
+    <dd class="mt-1 font-mono text-lg {{ tone }}">{{ value | safe }}</dd>
   </div>
   {% endfor %}
 </dl>

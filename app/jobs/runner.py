@@ -680,6 +680,14 @@ def _record_bisync(
             "modified": deltas.path2_modified,
             "deleted": deltas.path2_deleted,
         },
+        # The same keys the summary cards read, aggregated across both sides.
+        # Without them a bidirectional run showed New 0, Updated 0 and Deleted 0
+        # however much it reconciled, because the cards cannot read the per-side
+        # breakdown above. `unchanged` is deliberately absent: bisync does not
+        # report it, and the page shows a dash rather than inventing a zero.
+        "new": deltas.path1_new + deltas.path2_new,
+        "updated": deltas.path1_modified + deltas.path2_modified,
+        "bytes": run.bytes_transferred,
         "transferred": len(observed.copies),
         "deleted": len(removed),
         "archived": len(observed.archived),
