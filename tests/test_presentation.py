@@ -867,3 +867,51 @@ def test_the_change_table_says_which_way_each_file_flowed(
     assert ">Flow</th>" in page
     # Both directions are named, using the connections rather than "source".
     assert "UltraCC" in page and "Synology" in page
+
+
+def test_the_flow_label_carries_the_subpath(authed_client: TestClient, settings) -> None:
+    """A bidirectional job commonly pairs two subpaths of the same connection.
+    The names alone are then identical, and the column read "Synology Test ->
+    Synology Test", which says nothing about which way anything went."""
+    from app.models import (
+        ChangeAction,
+        ChangeSide,
+        JobRun,
+        JobRunChange,
+        RunMode,
+        RunStatus,
+        RunTrigger,
+    )
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    both = Connection(name="Synology", type=ConnectionType.local, base_path="/data")
+    session.add(both)
+    session.commit()
+    job = Job(
+        name="Same connection",
+        source_connection_id=both.id,
+        dest_connection_id=both.id,
+        source_path="old",
+        dest_path="new",
+        filters={},
+    )
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id,
+        trigger=RunTrigger.manual,
+        mode=RunMode.dry_run,
+        status=RunStatus.success,
+        summary={"new": 1},
+    )
+    session.add(run)
+    session.commit()
+    session.add(
+        JobRunChange(run_id=run.id, action=ChangeAction.new, side=ChangeSide.dest, path="test2.txt")
+    )
+    session.commit()
+
+    page = authed_client.get(f"/runs/{run.id}").text
+
+    assert "/data/old" in page, "the source subpath should be in the flow label"
+    assert "/data/new" in page, "the destination subpath should be in the flow label"

@@ -286,16 +286,14 @@
           {{ change.action.value }}
         </td>
         <td class="px-4 py-1.5 whitespace-nowrap font-mono text-xs text-slate-500">
-          {# `side` is the side the change lands on, so the other one is where it
-             came from. A one way job repeats the same pair on every row, which
-             is redundant but not wrong; a bidirectional job needs it, because
-             two rows in the same table can flow opposite ways. #}
+          {# `side` is the side the change lands on, so the other one is where
+             it came from. The label carries the subpath as well as the
+             connection name, because a bidirectional job often pairs two paths
+             on the same connection and the names alone are then identical. #}
           {% if change.side.value == 'source' %}
-          {{ job.dest_connection.name }} <span class="text-slate-600">&rarr;</span>
-          {{ job.source_connection.name }}
+          {{ dest_label }} <span class="text-slate-600">&rarr;</span> {{ source_label }}
           {% else %}
-          {{ job.source_connection.name }} <span class="text-slate-600">&rarr;</span>
-          {{ job.dest_connection.name }}
+          {{ source_label }} <span class="text-slate-600">&rarr;</span> {{ dest_label }}
           {% endif %}
         </td>
         <td class="px-4 py-1.5 font-mono text-xs text-slate-300">{{ change.path }}</td>

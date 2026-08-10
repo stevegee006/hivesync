@@ -361,6 +361,22 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> Any:
 # --------------------------------------------------------------------------
 
 
+def _endpoint_label(connection: Connection | None, subpath: str | None) -> str:
+    """One side of a job, as something a person can tell apart from the other.
+
+    Falls back to the bare connection name if the path cannot be resolved: a
+    label is worth having even when it is less specific, and this is decoration
+    on a results table rather than anything a run depends on.
+    """
+    if connection is None:
+        return "unknown"
+    with suppress(Exception):
+        resolved = rcloneconf.display_path(connection, subpath or None)
+        if resolved and resolved != connection.name:
+            return f"{connection.name}:{resolved}"
+    return connection.name
+
+
 def _page_context(request: Request, session: Session) -> dict[str, Any]:
     context = _base_context(request)
     context["user"] = security.require_user(request, session)
@@ -1124,8 +1140,17 @@ def run_detail_page(
         )
     }
 
+    job = session.get(Job, run.job_id)
     context["run"] = run
-    context["job"] = session.get(Job, run.job_id)
+    context["job"] = job
+    # Endpoint labels for the Flow column. The connection name alone is not
+    # enough: a bidirectional job commonly pairs two subpaths of the *same*
+    # connection, which rendered as "Synology -> Synology" and said nothing.
+    # display_path is what an operator recognises, without the synthetic
+    # hs_src:/hs_dst: alias a run invents for itself.
+    if job is not None:
+        context["source_label"] = _endpoint_label(job.source_connection, job.source_path)
+        context["dest_label"] = _endpoint_label(job.dest_connection, job.dest_path)
     context["changes"] = changes
     context["change_counts"] = counts
     context["total_changes"] = sum(counts.values())
