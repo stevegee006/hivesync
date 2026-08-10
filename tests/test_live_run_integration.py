@@ -322,3 +322,110 @@ def test_only_one_run_per_job_at_a_time(tmp_path: Path, env) -> None:
     planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
     with pytest.raises(planner.RunConflict):
         planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+
+
+# --------------------------------------------------------------------------
+# Approving a refused set of deletions
+#
+# The escape hatch on the delete brake, which is the most consequential control
+# in this program. Asserted on filesystem state, never on messages.
+# --------------------------------------------------------------------------
+
+
+def _approved(env, job: Job, deletions: int) -> JobRun:
+    """A live run carrying an operator's approval of a specific count."""
+    settings, box, factory, session = env
+    run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+    run.forced_max_delete = deletions
+    session.commit()
+    LiveRunner(factory, box=box, settings=settings).run_now(run.id)
+    session.expire_all()
+    stored = session.get(JobRun, run.id)
+    assert stored is not None
+    return stored
+
+
+def _doomed(tmp_path: Path, count: int) -> tuple[Path, Path]:
+    """A destination holding files the source no longer has."""
+    src = tmp_path / "src2"
+    dst = tmp_path / "dst2"
+    src.mkdir()
+    dst.mkdir()
+    (src / "keep.txt").write_text("kept\n", encoding="utf-8")
+    (dst / "keep.txt").write_text("kept\n", encoding="utf-8")
+    for index in range(count):
+        (dst / f"doomed{index}.txt").write_text("about to go\n", encoding="utf-8")
+    return src, dst
+
+
+def test_a_refused_run_records_what_it_would_have_deleted(tmp_path: Path, env) -> None:
+    """An error banner with no file list is the one thing an operator cannot act
+    on, and it was all a refusal produced."""
+    from app.models import JobRunChange
+
+    _settings, _box, _factory, session = env
+    src, dst = _doomed(tmp_path, 3)
+
+    run = _run(env, _job(session, src, dst, max_delete_pct=1))
+
+    assert run.status == RunStatus.failed
+    assert run.summary["refused_deletions"] == 3, run.summary
+    listed = {c.path for c in session.query(JobRunChange).filter_by(run_id=run.id).all()}
+    assert {"doomed0.txt", "doomed1.txt", "doomed2.txt"} <= listed
+    assert len(sorted(dst.iterdir())) == 4
+
+
+def test_approving_the_deletions_lets_exactly_those_through(tmp_path: Path, env) -> None:
+    _settings, _box, _factory, session = env
+    src, dst = _doomed(tmp_path, 3)
+    job = _job(session, src, dst, max_delete_pct=1)
+
+    refused = _run(env, job)
+    assert refused.status == RunStatus.failed
+
+    approved = _approved(env, job, refused.summary["refused_deletions"])
+
+    assert approved.status == RunStatus.success, approved.summary
+    assert sorted(path.name for path in dst.iterdir()) == ["keep.txt"]
+
+
+def test_an_approval_does_not_authorise_a_larger_set(tmp_path: Path, env) -> None:
+    """Why the approval is a count and not a switch. Agreeing to three deletions
+    must not authorise six if more disappears in between."""
+    _settings, _box, _factory, session = env
+    src, dst = _doomed(tmp_path, 3)
+    job = _job(session, src, dst, max_delete_pct=1)
+
+    refused = _run(env, job)
+    assert refused.summary["refused_deletions"] == 3
+
+    for index in range(3, 6):
+        (dst / f"doomed{index}.txt").write_text("also doomed\n", encoding="utf-8")
+
+    run = _approved(env, job, 3)
+
+    assert run.status == RunStatus.failed, run.summary
+    # Nothing removed at all: the veto fires before rclone is invoked.
+    assert len(sorted(dst.iterdir())) == 7
+    assert run.files_deleted == 0
+
+
+def test_an_approval_is_for_one_run_only(tmp_path: Path, env) -> None:
+    """The job's own brake is untouched, so the next scheduled run is refused
+    again rather than inheriting the decision."""
+    _settings, _box, _factory, session = env
+    src, dst = _doomed(tmp_path, 3)
+    job = _job(session, src, dst, max_delete_pct=1)
+
+    assert _approved(env, job, 3).status == RunStatus.success
+    session.refresh(job)
+    assert job.max_delete_pct == 1
+
+    # A fresh set of deletions, and no approval this time.
+    for index in range(3):
+        (dst / f"later{index}.txt").write_text("new arrival\n", encoding="utf-8")
+
+    run = _run(env, job)
+
+    assert run.status == RunStatus.failed
+    assert len(sorted(dst.iterdir())) == 4

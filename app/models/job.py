@@ -261,6 +261,16 @@ class JobRun(Base):
     # different and more consequential operation: it makes one side match the
     # other for any file that differs. SPEC section 10.1.
     is_resync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # An operator's explicit approval of a specific number of deletions, after a
+    # run was refused by the delete brake. NULL is the normal case: the brake is
+    # resolved from the job's percentage as usual.
+    #
+    # A count rather than a boolean on purpose. "Force" as an on/off switch means
+    # "delete whatever you find", and what an operator actually saw and agreed to
+    # was a number. If more deletions appear between approving and running, the
+    # pre-flight refuses again rather than acting on an approval that was given
+    # for something smaller.
+    forced_max_delete: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mode: Mapped[RunMode] = mapped_column(str_enum(RunMode, length=16), nullable=False)
     status: Mapped[RunStatus] = mapped_column(
         str_enum(RunStatus, length=16), nullable=False, default=RunStatus.queued

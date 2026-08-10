@@ -86,7 +86,11 @@ needs `docker login` and a manual QEMU binfmt registration, so prefer the tag.
 ## Invariants that must never regress
 
 - No plaintext credential is ever written to `/config` or to any log.
-- No live sync runs without `--max-delete`.
+- No live sync runs without `--max-delete`. An operator can approve a specific
+  number of deletions on a run the brake refused, and the flag is still passed,
+  at the number they approved. The approval is a **count, not a switch**: if
+  more deletions appear before it is acted on, the pre-flight refuses the larger
+  set rather than acting on an agreement given for something smaller.
 - A dry run modifies nothing on either endpoint.
 - The deletion archive path can never be inside the synced tree without an injected exclude filter.
 - `bisync` never auto-resyncs. Resync is always an explicit, confirmed user action.
@@ -356,6 +360,10 @@ admin. SQLite serialises writers, so the loser's own commit reveals the race.
 - 2026-08-10, rclone, **a bisync resync emits no per-side delta lines.** It makes path2 match path1 without a diff phase, so `Path1: N changes: ...` never appears. Counts derived from those read new 0, updated 0 for a first sync that had plainly copied files, while `files_transferred` said otherwise. Take them from what the run did (`observed.created` and `observed.replacements`, which come from rclone's own copy wording) rather than from the diff, which is the same source the one way summary uses.
 - 2026-08-10, design, **`JobRunChange.side` means the side a change lands on**, which is what `rclone.side_for` documents. bisync names the side a difference was *detected* on, and those are opposites: a file new on Path1 is copied to Path2. Recording the detected side gave one column two meanings depending on which engine wrote the row. `_LANDS_ON` inverts it at the parser. The run page's Flow column derives "from -> to" from it, which is only unambiguous because both writers now agree.
 - 2026-08-10, ux, only the one way runner ever wrote per-file `JobRunChange` rows. A bidirectional live run therefore showed correct counts above a change table reading "Nothing changed", for every run since M5. Counts and the list behind them come from different code, so a test that checks the numbers proves nothing about the table.
+
+- 2026-08-10, ux, **a run refused by the delete brake showed an error banner and nothing else.** That is the moment an operator most needs to see *which* files, and it was the one screen that listed none of them. `BrakeEngaged` now carries what the check found, and `_fail` persists it, so a refusal renders the same cards and file list a dry run does. A failure with nothing behind it, such as a connection that never opened, still shows only the reason: four zeros and "Nothing changed" would claim it looked.
+- 2026-08-10, design, **the delete brake override is a count, not a boolean.** "Force" as an on/off switch means "delete whatever you find at the time", and what an operator actually saw and agreed to was a number. `JobRun.forced_max_delete` carries that number onto one run: for a one way job it becomes the `--max-delete` threshold, and for bisync it gates our own veto while `--force` stops rclone refusing on its percentage. Approving three deletions and then letting six appear is refused with nothing removed, which `test_an_approval_does_not_authorise_a_larger_set` asserts on filesystem state.
+- 2026-08-10, ux, **rclone quotes the synthetic run alias back in its own errors**, so a refusal read `on Path1 "hs_src{SLM4a}:Backups/old/source/"`. The alias exists for the length of one process and means nothing to someone who typed a connection name and a path. `_readable` strips it; the side is already named by bisync as Path1 or Path2, so removing it loses nothing.
 
 ### M1 acceptance status, verified 2026-08-05
 

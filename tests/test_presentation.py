@@ -419,7 +419,11 @@ def test_the_run_page_reads_keys_that_a_live_run_actually_writes() -> None:
     # bisync summary writes it, and `test_a_live_bisync_run_reports_its_own_brake`
     # covers that. The rule this test enforces is about *counts*, where a missing
     # key is indistinguishable from a real zero and silently renders as one.
-    missing -= {"rows_omitted", "bidirectional"}
+    #
+    # `error` and `refused_deletions` are written by the failure path rather
+    # than the success path, and their absence from a run that succeeded is the
+    # correct answer rather than a missing figure.
+    missing -= {"rows_omitted", "bidirectional", "error", "refused_deletions"}
     assert not missing, (
         f"the run page reads {sorted(missing)} which no live run writes, so they "
         "will silently render as zero"
@@ -915,3 +919,159 @@ def test_the_flow_label_carries_the_subpath(authed_client: TestClient, settings)
 
     assert "/data/old" in page, "the source subpath should be in the flow label"
     assert "/data/new" in page, "the destination subpath should be in the flow label"
+
+
+# --------------------------------------------------------------------------
+# A run refused by the delete brake
+# --------------------------------------------------------------------------
+
+
+def _refused_run(settings, *, deletions: int = 2, with_changes: bool = True) -> int:
+    from app.models import (
+        ChangeAction,
+        ChangeSide,
+        JobRun,
+        JobRunChange,
+        RunMode,
+        RunStatus,
+        RunTrigger,
+    )
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="Src", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="Dst", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(
+        name="Braked",
+        source_connection_id=source.id,
+        dest_connection_id=dest.id,
+        filters={},
+        max_delete_pct=20,
+    )
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id,
+        trigger=RunTrigger.manual,
+        mode=RunMode.live,
+        status=RunStatus.failed,
+        summary={
+            "error": "This run would delete 2 files, and the 20% delete brake allows 1.",
+            "refused_deletions": deletions,
+            "deleted": deletions,
+        },
+    )
+    session.add(run)
+    session.commit()
+    if with_changes:
+        for name in ("gone-one.txt", "gone-two.txt"):
+            session.add(
+                JobRunChange(
+                    run_id=run.id,
+                    action=ChangeAction.deleted,
+                    side=ChangeSide.dest,
+                    path=name,
+                )
+            )
+        session.commit()
+    return run.id
+
+
+def test_a_refused_run_still_shows_what_it_found(authed_client: TestClient, settings) -> None:
+    """A refusal is the moment someone most needs to see which files, and it was
+    the one screen that showed an error banner and nothing else."""
+    run_id = _refused_run(settings)
+
+    page = authed_client.get(f"/runs/{run_id}").text
+
+    assert "delete brake allows" in page
+    assert "gone-one.txt" in page
+    assert "gone-two.txt" in page
+    assert ">Flow</th>" in page
+
+
+def test_a_refused_run_offers_to_run_anyway(authed_client: TestClient, settings) -> None:
+    run_id = _refused_run(settings, deletions=2)
+
+    page = authed_client.get(f"/runs/{run_id}").text
+
+    flat = re.sub(r"\s+", " ", page)
+
+    assert f'action="/runs/{run_id}/force"' in page
+    # The number is on the button, not just in the confirmation.
+    assert "allowing 2 deletions" in flat
+    # And it says what it does not change.
+    assert "not the brake itself" in flat
+
+
+def test_a_failure_with_nothing_behind_it_shows_no_summary_cards(
+    authed_client: TestClient, settings
+) -> None:
+    """A connection that would never open never got as far as checking, so four
+    zeros and "Nothing changed" would claim it looked and found nothing."""
+    from app.models import JobRun, RunMode, RunStatus, RunTrigger
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="S2", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="D2", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(name="Broken", source_connection_id=source.id, dest_connection_id=dest.id, filters={})
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id,
+        trigger=RunTrigger.manual,
+        mode=RunMode.live,
+        status=RunStatus.failed,
+        summary={"error": "The source could not be reached."},
+    )
+    session.add(run)
+    session.commit()
+
+    page = authed_client.get(f"/runs/{run.id}").text
+
+    assert "could not be reached" in page
+    assert "Nothing changed" not in page
+    assert ">NEW<" not in page.upper().replace("NEW</DT>", ">NEW<")
+
+
+def test_forcing_creates_a_run_that_approves_that_many(authed_client: TestClient, settings) -> None:
+    """The approval is a count, not a switch. A run created from it carries the
+    number, so a larger set appearing later is refused rather than acted on."""
+    from app.models import JobRun
+
+    run_id = _refused_run(settings, deletions=2)
+    page = authed_client.get(f"/runs/{run_id}").text
+    marker = 'name="csrf_token" value="'
+    start = page.index(marker) + len(marker)
+    token = page[start : page.index('"', start)]
+
+    response = authed_client.post(
+        f"/runs/{run_id}/force", data={"csrf_token": token}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    with sessionmaker(bind=create_db_engine(settings))() as session:
+        created = session.query(JobRun).order_by(JobRun.id.desc()).first()
+    assert created is not None
+    assert created.id != run_id
+    assert created.forced_max_delete == 2
+
+
+def test_forcing_a_run_with_nothing_to_approve_does_nothing(
+    authed_client: TestClient, settings
+) -> None:
+    """A refusal that was not about a count, such as a missing sentinel file,
+    has no number to agree to."""
+    from app.models import JobRun
+
+    run_id = _refused_run(settings, deletions=2)
+    with sessionmaker(bind=create_db_engine(settings))() as session:
+        run = session.get(JobRun, run_id)
+        run.summary = {"error": "The sentinel file is missing."}
+        session.commit()
+
+    page = authed_client.get(f"/runs/{run_id}").text
+    assert "/force" not in page

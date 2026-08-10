@@ -266,6 +266,7 @@ def build_bisync_command(
     workdir: str,
     resync: bool = False,
     dry_run: bool = False,
+    force: bool = False,
     unattended: bool = False,
     archive: list[str] | None = None,
 ) -> list[str]:
@@ -299,6 +300,12 @@ def build_bisync_command(
         args.append("--resync")
     if dry_run:
         args.append("--dry-run")
+    if force:
+        # rclone's own escape hatch, named in the abort message it prints. Only
+        # ever set from an explicit approval on a refused run: our own veto has
+        # already re-checked that the deletions are the ones that were approved,
+        # and this stops rclone refusing them a second time on its percentage.
+        args.append("--force")
 
     if unattended:
         # SPEC 10.5. Only for scheduled runs: a manual run has someone watching

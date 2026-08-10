@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -37,7 +38,7 @@ from app import preferences as preferences_store
 from app.config import Settings
 from app.crypto import SecretBox
 from app.engines import bisync, parsers, process, rcloneconf
-from app.engines.base import EngineError, Plan
+from app.engines.base import EngineError, Plan, PlannedChange
 from app.engines.rclone import (
     RcloneEngine,
     build_sync_command,
@@ -69,7 +70,28 @@ PLAN_TIMEOUT_SECONDS = 15 * 60
 
 
 class BrakeEngaged(Exception):
-    """The pre-flight veto refused the run. Carries a user facing explanation."""
+    """The pre-flight veto refused the run. Carries a user facing explanation.
+
+    It also carries what the check found, so a refusal can show the same cards
+    and file list a dry run does. A refusal that says only "too many deletes" is
+    the moment an operator most needs to see *which* files, and it was the one
+    screen that showed nothing.
+
+    `deletions` is the number an operator would be approving if they chose to
+    run it anyway. None means the refusal was not about a count at all, such as
+    a missing sentinel file, and there is nothing to approve.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        deletions: int | None = None,
+        changes: list[PlannedChange] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.deletions = deletions
+        self.changes = changes or []
 
 
 class LiveRunner:
@@ -136,7 +158,7 @@ class LiveRunner:
             try:
                 self._execute(session, run, job)
             except BrakeEngaged as exc:
-                _fail(session, run, str(exc), status=RunStatus.failed)
+                _fail(session, run, str(exc), status=RunStatus.failed, refused=exc)
                 _emit(run_id, "status", f"Refused: {exc}")
             except (EngineError, RemoteConfigError, archive.ArchiveError) as exc:
                 _fail(session, run, str(exc))
@@ -193,7 +215,7 @@ class LiveRunner:
             # own percentage brake that aborts before changing anything, so this
             # is belt and braces, but it produces the better message.
             if not run.is_resync:
-                self._bisync_preflight(job, prepared, path1, path2, workdir)
+                self._bisync_preflight(job, prepared, path1, path2, workdir, run)
 
             archive_flags = []
             if job.delete_mode == DeleteMode.archive:
@@ -211,6 +233,7 @@ class LiveRunner:
                 resync=run.is_resync,
                 unattended=run.trigger == RunTrigger.schedule,
                 archive=archive_flags,
+                force=run.forced_max_delete is not None,
             )
             running = process.stream(
                 argv, env=prepared.env, redactor=prepared.redactor, log_label="bisync"
@@ -243,6 +266,12 @@ class LiveRunner:
             return
 
         deltas = bisync.parse_deltas(text)
+        approved = run.forced_max_delete
+        if approved is not None and deltas.total_deleted <= approved:
+            # Already agreed to, and still no larger than what was agreed to.
+            # rclone would refuse on its own percentage, so the run carries
+            # --force past that; our own check is what holds the line.
+            return
         if deltas.safety_abort:
             _fail(
                 session,
@@ -260,7 +289,13 @@ class LiveRunner:
         _record_bisync(session, run, job, deltas, observed, exit_code, log_path, text)
 
     def _bisync_preflight(
-        self, job: Job, prepared: rcloneconf.Prepared, path1: str, path2: str, workdir: str
+        self,
+        job: Job,
+        prepared: rcloneconf.Prepared,
+        path1: str,
+        path2: str,
+        workdir: str,
+        run: JobRun,
     ) -> None:
         """Refuse before anything is written, using a bisync dry run."""
         argv = bisync.build_bisync_command(
@@ -281,8 +316,11 @@ class LiveRunner:
         if deltas.safety_abort:
             raise BrakeEngaged(
                 f"rclone refused this run before making any change: "
-                f"{deltas.safety_abort} Check that both endpoints are fully "
-                "mounted. If the deletions are intended, raise the delete brake."
+                f"{_readable(deltas.safety_abort, prepared)} Check that both "
+                "endpoints are fully mounted. If the deletions are intended, "
+                "run it anyway from the run page.",
+                deletions=deltas.total_deleted,
+                changes=bisync.parse_planned_changes(text),
             )
 
     # ---------------------------------------------------------------- one way
@@ -292,7 +330,14 @@ class LiveRunner:
         # notice a source that failed to mount five minutes ago, and that is
         # precisely the case the brake exists for.
         plan = RcloneEngine().plan(job, box=self._box, settings=self._settings)
-        threshold = resolve_max_delete(job.max_delete_pct, plan.dest_file_count)
+        # An approval from a refused run raises the brake to exactly the number
+        # that was agreed to, and no further. Invariant 7 holds either way:
+        # --max-delete is still passed, just at a threshold a person chose.
+        threshold = (
+            run.forced_max_delete
+            if run.forced_max_delete is not None
+            else resolve_max_delete(job.max_delete_pct, plan.dest_file_count)
+        )
 
         self._preflight(job, plan, threshold)
 
@@ -360,7 +405,9 @@ class LiveRunner:
                 f"{job.max_delete_pct}% delete brake allows {threshold} out of the "
                 f"{plan.dest_file_count} on the destination. Nothing was changed. "
                 "Check that the source is complete and mounted. If the deletions "
-                "are intended, raise the brake for this job."
+                "are intended, raise the brake for this job.",
+                deletions=plan.deleted_count,
+                changes=plan.changes,
             )
 
 
@@ -780,13 +827,60 @@ def _prune_quiet_cycle(session: Session, run: JobRun, job: Job) -> None:
     session.commit()
 
 
+def _readable(message: str, prepared: rcloneconf.Prepared) -> str:
+    """Replace the synthetic run aliases in an rclone message.
+
+    A run invents `hs_src:` and `hs_dst:` names for the length of the process,
+    and rclone quotes them back in its own errors. They mean nothing to the
+    person reading the screen, who typed a connection name and a path.
+    """
+    for endpoint in prepared.endpoints.values():
+        # Removed rather than substituted: bisync already says which side it
+        # means ("on Path1"), so the remaining path is the useful part and a
+        # replacement word would just be a second name for the same thing.
+        message = message.replace(f"{endpoint.alias}:", "")
+    return message
+
+
 def _fail(
-    session: Session, run: JobRun, message: str, *, status: RunStatus = RunStatus.failed
+    session: Session,
+    run: JobRun,
+    message: str,
+    *,
+    status: RunStatus = RunStatus.failed,
+    refused: BrakeEngaged | None = None,
 ) -> None:
     run.status = status
     run.finished_at = utcnow()
     run.errors_count = 1
-    run.summary = {"error": message}
+    summary: dict[str, object] = {"error": message}
+
+    if refused is not None:
+        # What the check found, so a refused run shows the same cards and file
+        # list a dry run does rather than an error banner and nothing else.
+        fallback = side_for(run.job) if run.job is not None else ChangeSide.dest
+        for change in refused.changes[:MAX_PERSISTED_CHANGES]:
+            session.add(
+                JobRunChange(
+                    run_id=run.id,
+                    action=change.action,
+                    side=change.side or fallback,
+                    path=change.path,
+                    size=change.size,
+                    message=change.message,
+                )
+            )
+        counts = Counter(change.action for change in refused.changes)
+        summary.update(
+            {
+                "new": counts[ChangeAction.new],
+                "updated": counts[ChangeAction.updated],
+                "deleted": counts[ChangeAction.deleted],
+                "refused_deletions": refused.deletions,
+            }
+        )
+
+    run.summary = summary
     session.commit()
     logger.warning("Live run failed", extra={"run_id": run.id, "reason": message})
 

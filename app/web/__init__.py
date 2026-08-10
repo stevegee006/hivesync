@@ -1094,6 +1094,42 @@ def resync_job_form(job_id: int, request: Request, session: Session = Depends(ge
     return RedirectResponse(url=f"/runs/{run.id}", status_code=303)
 
 
+@router.post("/runs/{run_id}/force", response_class=HTMLResponse)
+def force_run_form(run_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
+    """Re-run a refused job, approving the deletions the check found.
+
+    The approval is the number that was on screen, carried onto the new run.
+    It is not a switch that turns the brake off: the new run plans again, and if
+    more deletions have appeared since, the pre-flight refuses that larger set
+    rather than acting on an approval given for something smaller.
+    """
+    security.require_user(request, session)
+    refused = session.get(JobRun, run_id)
+    if refused is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+
+    approved = (refused.summary or {}).get("refused_deletions")
+    job = session.get(Job, refused.job_id)
+    if job is None or not isinstance(approved, int):
+        # Nothing to approve: either the job is gone, or the refusal was not
+        # about a count at all, such as a missing sentinel file.
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    try:
+        run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+    except planner.RunConflict:
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    run.forced_max_delete = approved
+    session.commit()
+    logger.warning(
+        "Delete brake overridden by an operator",
+        extra={"run_id": run.id, "job": job.name, "approved_deletions": approved},
+    )
+    request.app.state.live_runner.submit(run.id)
+    return RedirectResponse(url=f"/runs/{run.id}", status_code=303)
+
+
 @router.post("/runs/{run_id}/cancel", response_class=HTMLResponse)
 def cancel_run_form(run_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
     security.require_user(request, session)
