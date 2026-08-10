@@ -753,3 +753,37 @@ def test_unchanged_is_a_dash_rather_than_a_zero_for_a_bidirectional_run() -> Non
 
     assert "mdash" in template
     assert "summary.get('bidirectional')" in template
+
+
+# --------------------------------------------------------------------------
+# Template syntax that leaks onto the page
+# --------------------------------------------------------------------------
+
+
+def test_no_page_renders_template_syntax_as_content(authed_client: TestClient, settings) -> None:
+    """Jinja comments do not nest. Writing the closing marker as literal text
+    inside a comment ends it there, and the remainder is rendered to the page:
+    a paragraph of commentary about the template appeared above the summary
+    cards on every run page.
+
+    Checked by rendering, not by reading the source, because the source looked
+    like a comment and behaved like content.
+    """
+    run_id = _job_with_runs(settings)
+    pages = ["/", "/jobs", f"/jobs/{run_id}", "/connections", "/settings", "/credentials"]
+
+    for path in pages:
+        body = authed_client.get(path).text
+        assert "#}" not in body, f"{path} renders a stray comment terminator"
+        assert "{#" not in body, f"{path} renders an unopened comment"
+        assert "{%" not in body, f"{path} renders an unevaluated statement"
+
+
+def test_every_template_still_compiles() -> None:
+    """A syntax error in a template raises at render time rather than at import,
+    so a broken one ships happily and 500s the page instead."""
+    from app.web import TEMPLATE_DIR, templates
+
+    for path in sorted(TEMPLATE_DIR.rglob("*.html")):
+        name = path.relative_to(TEMPLATE_DIR).as_posix()
+        templates.env.get_template(name)

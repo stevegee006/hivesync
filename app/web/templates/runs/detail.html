@@ -200,9 +200,13 @@
    an invention rather than a measurement: a live bidirectional run shows a dash
    instead. A dry run of one does count them.
 
-   Set above the loop because Jinja has no comments inside an expression, and a
-   {# #} placed within the list below raises at render time rather than at
-   startup, so it 500s every page that uses this template. #}
+   Set above the loop because Jinja has no comments inside an expression: one
+   written into the list below raises at render time rather than at startup, so
+   it 500s every page that uses this template.
+
+   Note also that Jinja comments do not nest. Writing the opening and closing
+   markers as literal text inside a comment ends it at the first closing marker,
+   and everything after it is rendered to the page as content. #}
   {% set unknown = '&mdash;' if summary.get('bidirectional') else 0 %}
   {% for label, value, tone in [
       ('New', summary.get('new', 0), 'text-emerald-300'),

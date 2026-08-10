@@ -351,6 +351,8 @@ admin. SQLite serialises writers, so the loser's own commit reveals the race.
 
 - 2026-08-10, tooling, **running the integration suite removes the development container.** Observed twice: after `docker compose -f docker-compose.test.yml run --rm --build tests` and its `down -v`, `docker ps -a` shows no containers at all and the `hivesync` container is gone rather than stopped. The cause is not established. The test compose is a separate project (`name: hivesync-test`) with its own network and volume and sets no `container_name`, so nothing in it should reach the main stack. Nothing is lost, because `/config` is a bind mount and the image survives: `docker compose up -d` brings it back. Run the integration suite when the local instance is not wanted, and if this is ever chased down, record the answer here.
 
+- 2026-08-10, jinja, **comments do not nest, and a broken one renders as page content rather than failing.** Writing the closing marker as literal text inside a comment ends the comment there, and everything after it becomes output: a paragraph explaining the template appeared above the summary cards on every run page. Worse, it is silent, because a template that renders is a template that "works". This was written while documenting the neighbouring gotcha about comments inside an expression, which is its own lesson. `test_no_page_renders_template_syntax_as_content` renders each page and fails on a stray marker, and `test_every_template_still_compiles` loads every template through the application's own environment, since a template syntax error raises at render time rather than at import.
+
 ### M1 acceptance status, verified 2026-08-05
 
 All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,
