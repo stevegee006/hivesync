@@ -41,19 +41,25 @@ A self-hosted, Docker-based file sync orchestrator with a web UI. Replaces Resil
 The UI must keep these visually distinct because they answer different questions.
 
 **Engine**, chosen per job, means "how do bytes move":
-- `rclone` (default, recommended, supports every feature in this spec)
-- `lftp` (optional, faster on high-latency FTP links via segmented parallel transfers, one way only, no archiving)
+- `rclone` (supports every feature in this spec)
+- ~~`lftp`~~ **Removed.** See open question 1, now answered. It was never built,
+  and carrying the option meant carrying a GPL-3 binary in the image for a
+  feature nobody had established a need for. Only one engine exists, so the
+  choice is no longer offered anywhere.
 
 **Protocol**, chosen per endpoint, means "what am I talking to":
 - `local`, `sftp`, `ftp`, `ftps`, `smb`, `rclone_remote`
 
-LFTP is not a protocol, it is a client. Label it accurately in the UI so nobody expects it in the protocol list.
+The engine is no longer a per-job choice, since only one exists. The
+distinction still matters for the protocol list: a protocol is what you are
+talking to, not how it is driven.
 
 ### 2.2 Engine constraints
 
-- `lftp` is selectable only when **both** endpoints are `sftp`, `ftp`, or `ftps`. Any `smb`, `local`, or `rclone_remote` endpoint forces the `rclone` engine, and the UI states why rather than silently switching.
-- `lftp` cannot do bidirectional sync or `--backup-dir` archiving. If the user selects either, the UI explains that rclone is required and offers to switch the engine.
-- New jobs default to `rclone`.
+**This section is obsolete.** Every constraint here was about choosing between
+two engines, and there is only `rclone`. Kept as a record of what the option was
+supposed to have cost: selectable only when both endpoints were `sftp`, `ftp` or
+`ftps`, no bidirectional sync, and no `--backup-dir` archiving.
 
 ---
 
@@ -685,7 +691,7 @@ written expression untouched.
 
 ## 20. Open questions
 
-1. **Still open.** Are the volumes large enough that lftp's segmented transfers actually matter, or can the lftp engine be dropped entirely? The engine is not built: jobs selecting it are refused with a message, and the binary stays in the image pending this answer. Building a second deletion path nobody has established a need for is not free.
+1. **Answered: dropped.** lftp's segmented transfers were never needed at these volumes. The engine was carried as an option from M0 and never built, and it is now removed entirely: the `Engine` enum, the option, the binary, and with it a GPL-3 program redistributed in the image. A second deletion path nobody had established a need for was never going to be free to build or to test.
 2. Is the cloud server reachable inbound from the local server, or must the container live on the cloud side and push?
 3. **Still open.** Should archived deletions be tracked in the DB as restorable entries with one-click restore, or is the archive folder on disk sufficient? Retention pruning exists and is off by default, so nothing is lost while this is undecided.
 4. Single admin behind authentik, or real multi-user?

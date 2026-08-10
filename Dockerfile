@@ -132,10 +132,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HIVESYNC_CONFIG_DIR=/config \
     HIVESYNC_EXPECTED_RCLONE_VERSION="${RCLONE_VERSION}"
 
-# lftp is deliberately not version pinned. Debian trixie ships one lftp and only
-# security patches it, so an exact apt pin turns every future point release into
-# a build failure for no safety gain. The version is printed here and recorded by
-# `make pin-versions`.
+# lftp used to be installed here for an engine that was never built.
+# Removing it answers SPEC open question 1 and drops a GPL-3 binary from
+# the image, and with it the obligation to offer its source.
 #
 # openssh-client is here for ssh-keyscan, which the host key pinning in SPEC
 # section 15 needs. rclone's sftp backend is pure Go and does not use it.
@@ -146,12 +145,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        lftp \
         openssh-client \
         ca-certificates \
         tzdata; \
     rm -rf /var/lib/apt/lists/*; \
-    lftp --version | head -n 1; \
     command -v setpriv usermod groupmod ssh-keyscan
 
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone

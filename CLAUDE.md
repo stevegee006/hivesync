@@ -4,7 +4,7 @@ Standing instructions for work on this repository. `SPEC.md` is the requirements
 
 ## What this project is
 
-A Dockerized file sync orchestrator with a web UI. It does not implement file transfer protocols. It orchestrates `rclone` (and optionally `lftp`) as subprocesses, adding scheduling, credential management, dry-run previews, deletion archiving, and a UI.
+A Dockerized file sync orchestrator with a web UI. It does not implement file transfer protocols. It orchestrates `rclone` as a subprocess, adding scheduling, credential management, dry-run previews, deletion archiving, and a UI.
 
 Read `SPEC.md` before starting any milestone.
 
@@ -15,7 +15,6 @@ Read `SPEC.md` before starting any milestone.
 | Milestone in progress | none. M9 was added beyond SPEC section 18 |
 | Milestones complete | M0 through M8, plus M9 |
 | Pinned rclone version | 1.74.4, by SHA256 digest, see `versions.env` |
-| Observed lftp version | 4.9.2, now reproducible: the base image is pinned by digest, which pins the apt snapshot |
 | Config generation method | Env vars, `RCLONE_CONFIG_<NAME>_<KEY>`, verified in 1.74.4. Secrets obscured via `rclone obscure -` on stdin. No temp file, see below |
 | Capability probe method | `rclone backend features <remote>:`, verified present in 1.74.4 with a stable JSON shape. No fallback needed |
 
@@ -370,6 +369,8 @@ admin. SQLite serialises writers, so the loser's own commit reveals the race.
 - 2026-08-10, process, the one way approval path had integration coverage and the bidirectional one did not, so a feature that was broken for bidirectional jobs passed everything. Two engines implement the same user-facing action; a test for one of them is evidence about one of them.
 
 - 2026-08-10, process, **the same rclone message is surfaced in three places**: the dry run warning in `BisyncEngine.plan`, the live pre-flight, and the post-run failure. Stripping the run alias in one of them and reporting it fixed left it on screen in the other two, including the dry run, which is the mode people use to decide whether to run anything. `Prepared.readable` is now the only implementation, on the object that owns the aliases, and `test_no_message_that_quotes_the_safety_abort_leaves_the_alias_in` fails if any file interpolates the raw text again. Before claiming a message is fixed, grep for the thing it interpolates.
+
+- 2026-08-10, decision, **lftp is removed**, answering SPEC open question 1. It was carried as an option from M0 and never built: the enum member, the apt package, the health probe and the version panel all existed for an engine that refused every job selecting it. Removing it also drops a GPL-3 program from the published image, and with it the obligation to offer its source. Migration 0008 rewrites any job still recording it, because leaving the value would break loading that row once the enum lost the member. Verified in the rebuilt image: `command -v lftp` finds nothing and the health payload is down to three keys.
 
 ### M1 acceptance status, verified 2026-08-05
 

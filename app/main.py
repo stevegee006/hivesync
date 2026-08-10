@@ -127,8 +127,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     report: binaries.BinaryReport = app.state.binaries
     if not report.rclone.ok:
         logger.error("rclone is not usable", extra={"error": report.rclone.error})
-    if not report.lftp.ok:
-        logger.error("lftp is not usable", extra={"error": report.lftp.error})
     if report.rclone_matches_expected is False:
         logger.error(
             "Installed rclone is not the pinned version",
@@ -156,7 +154,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         extra={
             "app_version": __version__,
             "rclone_version": report.rclone.version,
-            "lftp_version": report.lftp.version,
             "auth_mode": settings.auth_mode,
             "timezone": settings.timezone,
         },

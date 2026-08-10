@@ -43,7 +43,6 @@ def test_health_reports_pinned_binary_versions(authed_client: TestClient) -> Non
     assert body["rclone"]["version"] == "1.74.4"
     assert body["rclone"]["expected_version"] == "1.74.4"
     assert body["rclone"]["matches_expected"] is True
-    assert body["lftp"]["version"] == "4.9.3"
     assert body["database"]["ok"] is True
     assert body["app_version"]
 
@@ -53,7 +52,6 @@ def test_version_mismatch_is_degraded_not_ok(app: FastAPI, authed_client: TestCl
     between versions, so a silent substitution is a real hazard."""
     app.state.binaries = BinaryReport(
         rclone=BinaryInfo(name="rclone", ok=True, version="1.75.0"),
-        lftp=BinaryInfo(name="lftp", ok=True, version="4.9.3"),
         expected_rclone_version="1.74.4",
     )
     body = authed_client.get("/api/health/detail").json()
@@ -66,7 +64,6 @@ def test_missing_binary_is_degraded_with_a_reason(app: FastAPI, authed_client: T
     of the container entering a restart loop."""
     app.state.binaries = BinaryReport(
         rclone=BinaryInfo(name="rclone", ok=False, error="rclone was not found on PATH."),
-        lftp=BinaryInfo(name="lftp", ok=True, version="4.9.3"),
         expected_rclone_version=None,
     )
     response = authed_client.get("/api/health/detail")
@@ -91,7 +88,6 @@ def test_database_failure_is_a_503(client: TestClient, monkeypatch: pytest.Monke
 def test_no_expectation_declared_is_not_a_mismatch() -> None:
     report = BinaryReport(
         rclone=BinaryInfo(name="rclone", ok=True, version="1.74.4"),
-        lftp=BinaryInfo(name="lftp", ok=True, version="4.9.3"),
         expected_rclone_version=None,
     )
     assert report.rclone_matches_expected is None

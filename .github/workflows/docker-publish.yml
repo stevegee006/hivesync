@@ -85,7 +85,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       # M0's acceptance criterion, asserted in CI: the container serves a login
-      # page and health reports the pinned rclone and lftp versions.
+      # page and health reports the pinned rclone version.
       #
       # M8 moved the version detail behind authentication, so this signs in with
       # the API bearer token rather than reading it from an open endpoint. The
@@ -118,7 +118,6 @@ jobs:
           cat health.json
           jq -e '.status == "ok"' health.json > /dev/null
           jq -e '.rclone.matches_expected == true' health.json > /dev/null
-          jq -e '.lftp.version | length > 0' health.json > /dev/null
           test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/health/detail)" = "401"
           curl -fsS localhost:8080/login | grep -q "Sign in"
           # A form post with no CSRF token is refused. SPEC section 15.

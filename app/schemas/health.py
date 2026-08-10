@@ -39,4 +39,3 @@ class HealthResponse(LivenessResponse):
     """The authenticated answer, with the version detail."""
 
     rclone: RcloneHealth
-    lftp: BinaryHealth

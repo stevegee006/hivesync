@@ -98,13 +98,12 @@ def refresh_csrf(client: TestClient) -> str:
 def fake_binaries() -> BinaryReport:
     """A healthy binary report.
 
-    The host running unit tests has no rclone or lftp, and should not need them:
+    The host running unit tests has no rclone, and should not need it:
     binary discovery is exercised directly in test_binaries.py, and everything
     else injects this.
     """
     return BinaryReport(
         rclone=BinaryInfo(name="rclone", ok=True, version="1.74.4", path="/usr/local/bin/rclone"),
-        lftp=BinaryInfo(name="lftp", ok=True, version="4.9.3", path="/usr/bin/lftp"),
         expected_rclone_version="1.74.4",
     )
 

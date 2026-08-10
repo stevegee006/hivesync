@@ -229,7 +229,6 @@ def _base_context(request: Request) -> dict[str, Any]:
         "clock": clock,
         "nav_active": request.url.path,
         "rclone_version": report.rclone.version,
-        "lftp_version": report.lftp.version,
         "min_password_length": security.MIN_PASSWORD_LENGTH,
     }
 

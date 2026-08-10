@@ -1,7 +1,7 @@
 """Liveness, and a separate authenticated endpoint for version detail.
 
 **Split at M8, and this is a deliberate change to something M0 asserted.** Until
-now `/api/health` reported the rclone and lftp versions to anyone who could reach
+now `/api/health` reported the rclone version to anyone who could reach
 the port, which is a free inventory of the binaries to attack. It stays
 unauthenticated because the container HEALTHCHECK calls it and has no session,
 but it now answers only "is this process serving and can it reach its database".
@@ -26,7 +26,6 @@ from app.api.deps import CurrentUser
 from app.binaries import BinaryReport
 from app.db import database_ok
 from app.schemas.health import (
-    BinaryHealth,
     DatabaseHealth,
     HealthResponse,
     HealthStatus,
@@ -90,10 +89,5 @@ def health_detail(request: Request, response: Response, _user: CurrentUser) -> H
             error=report.rclone.error,
             expected_version=report.expected_rclone_version,
             matches_expected=report.rclone_matches_expected,
-        ),
-        lftp=BinaryHealth(
-            ok=report.lftp.ok,
-            version=report.lftp.version,
-            error=report.lftp.error,
         ),
     )

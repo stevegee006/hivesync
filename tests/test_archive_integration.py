@@ -2,7 +2,6 @@
 
     a deleted source file lands in the archive with its relative path preserved,
     the archive tree is never itself synced or re-archived across three
-    consecutive runs, the lftp plus archive combination is blocked with a clear
     explanation, and the manual checklist passes.
 
 The last criterion is written around Synology in the spec. It is run here against
@@ -204,34 +203,6 @@ def test_a_sibling_archive_is_stable_across_three_runs(tmp_path: Path, env) -> N
     # The destination holds only the kept file; the archive is outside it.
     assert _files_under(dst) == {"keep.txt"}
     assert len(_files_under(tmp_path / "d.hivesync-archive")) == 1
-
-
-# --------------------------------------------------------------------------
-# Criterion: lftp plus archive is refused with a clear explanation
-# --------------------------------------------------------------------------
-
-
-def test_lftp_with_archiving_is_refused_with_the_reason() -> None:
-    """SPEC 18. The reason has to be about the combination, not just about lftp,
-    because it stays impossible even once the engine exists."""
-    from pydantic import ValidationError
-
-    from app.models import Engine
-    from app.schemas.job import JobCreate
-
-    with pytest.raises(ValidationError) as excinfo:
-        JobCreate(
-            name="x",
-            source_connection_id=1,
-            dest_connection_id=2,
-            engine=Engine.lftp,
-            delete_mode=DeleteMode.archive,
-        )
-    message = str(excinfo.value)
-    assert "cannot archive deletions" in message
-    assert "backup directory" in message
-    # And it says what to do instead.
-    assert "rclone engine" in message
 
 
 # --------------------------------------------------------------------------

@@ -1,10 +1,9 @@
 """External binary discovery for /api/health.
 
-Version strings are parsed from the text output of `rclone version` and
-`lftp --version`. Neither is assumed to have a JSON mode: CLAUDE.md rule 3
-forbids inventing flags, and no JSON output flag was verified for either tool in
-the pinned versions. If one is confirmed later, switch to it and record the
-finding in the gotchas log.
+The version string is parsed from the text output of `rclone version`. A JSON
+mode is not assumed: CLAUDE.md rule 3 forbids inventing flags, and none was
+verified for the pinned version. If one is confirmed later, switch to it and
+record the finding in the gotchas log.
 
 Every command here is a fixed list[str]. There is no shell, and no user input
 reaches an argument.
@@ -21,8 +20,6 @@ _PROBE_TIMEOUT_SECONDS = 10
 
 # `rclone version` first line: "rclone v1.74.4"
 _RCLONE_VERSION_RE = re.compile(r"^rclone\s+v?(?P<version>[0-9][^\s]*)", re.MULTILINE)
-# `lftp --version` first line: "LFTP | Version 4.9.2 | Copyright (c) ..."
-_LFTP_VERSION_RE = re.compile(r"Version\s+(?P<version>[0-9][^\s|]*)")
 # Last resort for either tool if upstream reformats its banner.
 _ANY_VERSION_RE = re.compile(r"(?P<version>\d+\.\d+(?:\.\d+)?)")
 
@@ -87,14 +84,9 @@ def rclone_info() -> BinaryInfo:
     return _probe("rclone", ["version"], [_RCLONE_VERSION_RE, _ANY_VERSION_RE])
 
 
-def lftp_info() -> BinaryInfo:
-    return _probe("lftp", ["--version"], [_LFTP_VERSION_RE, _ANY_VERSION_RE])
-
-
 @dataclass(frozen=True)
 class BinaryReport:
     rclone: BinaryInfo
-    lftp: BinaryInfo
     expected_rclone_version: str | None
 
     @property
@@ -111,13 +103,12 @@ class BinaryReport:
 
     @property
     def all_ok(self) -> bool:
-        return self.rclone.ok and self.lftp.ok and self.rclone_matches_expected is not False
+        return self.rclone.ok and self.rclone_matches_expected is not False
 
 
 def collect(expected_rclone_version: str | None) -> BinaryReport:
     """Probe both binaries. Called once at startup and cached on app state."""
     return BinaryReport(
         rclone=rclone_info(),
-        lftp=lftp_info(),
         expected_rclone_version=expected_rclone_version,
     )

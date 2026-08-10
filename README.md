@@ -27,7 +27,7 @@ Sync for cloud-server-to-local-server directory syncing, adding multi-protocol
 support, scheduling, dry runs, and deletion archiving.
 
 HiveSync implements no file transfer protocols of its own. It drives `rclone` (and
-optionally `lftp`) as subprocesses, adding scheduling, credential management, dry
+as a subprocess, adding scheduling, credential management, dry
 run previews, deletion archiving, and a UI.
 
 ## What works today
@@ -68,9 +68,10 @@ fixtures:
 - **A schedule builder**, so a weekly job is a few dropdowns rather than a cron
   expression.
 
-Not built: the `lftp` engine. The binary is in the image and the option exists,
-but jobs that select it are refused. Whether segmented transfers are worth having
-is `SPEC.md` open question 1, still unanswered.
+`lftp` was carried as an option from the start and never built. It is gone:
+the option, the binary and the GPL-3 obligation that came with it. Whether
+segmented transfers were worth having was `SPEC.md` open question 1, and the
+answer is no.
 
 **Continuous mode is polling, not watching.** This matters, so it is stated
 plainly rather than buried: no endpoint HiveSync talks to can tell it that a file
@@ -601,7 +602,6 @@ pruning an archive is the one operation here with nothing behind it.
 | Base images | pinned by digest | `python:3.12-slim` and `debian:trixie-slim`, by manifest digest |
 | Python packages | exact, with hashes | `requirements.lock`, installed with `--require-hashes` |
 | rclone | 1.74.4 | Official release zip, SHA256 verified against a pinned digest |
-| lftp | 4.9.2 | Debian trixie, at the pinned base image digest, see below |
 | Tailwind CLI | 4.3.3 | Standalone Go binary, no Node in the build |
 | htmx | 2.0.10 | Vendored, not a CDN |
 | Alpine.js | 3.15.12 | Vendored, not a CDN |
@@ -609,12 +609,6 @@ pruning an archive is the one operation here with nothing behind it.
 Versions live in `versions.env`. rclone is pinned by digest because a tool that
 deletes files should not run an unverified binary; if that check fails, re-read the
 published `SHA256SUMS` and update `versions.env` rather than bypassing it.
-
-lftp is not pinned to an exact apt version, but the base image digest pins the
-apt snapshot it comes from, so the same build produces the same lftp. Debian
-trixie ships one lftp and only security patches it, so an exact apt pin would turn
-every future point release into a build failure for no safety gain.
-`make pin-versions` reports what the built image actually contains.
 
 `requirements.txt` is the hand-edited list; `requirements.lock` is generated from
 it with a hash for every distribution. After changing a dependency, run:
@@ -727,8 +721,6 @@ README walkthrough all run against real servers rather than against fakes.
 MIT. See [LICENSE](LICENSE). Use it, change it, ship it, sell it; keep the
 copyright notice and accept that it comes with no warranty.
 
-rclone and lftp are separate programs, driven as subprocesses rather than
-linked as libraries, so their licences apply to them and not to HiveSync. Both
-are redistributed inside the published image under their own terms: rclone is
-MIT, and lftp is GPL-3 (Debian's `lftp` package, unmodified, whose source is
-available from Debian).
+rclone is a separate program, driven as a subprocess rather than linked as a
+library, so its licence applies to it and not to HiveSync. It is redistributed
+inside the published image under its own terms, which are MIT.

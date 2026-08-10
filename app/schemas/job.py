@@ -124,22 +124,6 @@ class JobBase(BaseModel):
                 "it backs off from."
             )
 
-        if self.engine == Engine.lftp and self.delete_mode == DeleteMode.archive:
-            # SPEC 2.2 and 18: this combination is impossible even once lftp
-            # exists, so it gets its own reason rather than the generic one below.
-            raise ValueError(
-                "The lftp engine cannot archive deletions: it has no equivalent of "
-                "rclone's backup directory, so a deleted file would be gone rather "
-                "than moved aside. Use the rclone engine, or choose 'delete'."
-            )
-
-        if self.engine == Engine.lftp:
-            # SPEC 2.2. The engine does not exist yet, and its constraints differ.
-            raise ValueError(
-                "The lftp engine is not available. It is optional and arrives in a "
-                "later milestone, if at all. Use rclone."
-            )
-
         # Checked before the archive refusal below, so the type of delete_mode is
         # not yet narrowed and this stays a meaningful comparison.
         if self.archive_base and self.delete_mode != DeleteMode.archive:

@@ -41,8 +41,10 @@ from app.models.filter_preset import FilterPreset, job_filter_preset
 
 
 class Engine(enum.StrEnum):
+    """Only rclone. lftp was carried as an option and never built: see
+    SPEC open question 1, answered by removing it."""
+
     rclone = "rclone"
-    lftp = "lftp"
 
 
 class Direction(enum.StrEnum):
