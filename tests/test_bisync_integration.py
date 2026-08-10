@@ -542,3 +542,104 @@ def test_a_first_sync_counts_what_it_copied(tmp_path: Path, env) -> None:
     # And the files are listed, not just counted.
     changes = session.query(JobRunChange).filter_by(run_id=run.id).all()
     assert sorted(c.path for c in changes) == ["a.txt", "b.txt"]
+
+
+# --------------------------------------------------------------------------
+# Approving a refused set of deletions, bidirectionally
+#
+# The one way path had this coverage and the bidirectional path did not, which
+# is exactly how the approval reached production checking the wrong side of the
+# run: it compiled, typechecked and passed every test that existed.
+# --------------------------------------------------------------------------
+
+
+def _approved(env, job: Job, deletions: int) -> JobRun:
+    settings, box, factory, session = env
+    run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.live)
+    run.forced_max_delete = deletions
+    session.commit()
+    LiveRunner(factory, box=box, settings=settings).run_now(run.id)
+    session.expire_all()
+    stored = session.get(JobRun, run.id)
+    assert stored is not None
+    return stored
+
+
+def test_a_bidirectional_run_refused_by_the_brake_offers_a_count(tmp_path: Path, env) -> None:
+    p1, p2 = _pair(tmp_path)
+    for name in ("one.txt", "two.txt"):
+        (p1 / name).write_text("here\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2, max_delete_pct=20)
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    (p1 / "one.txt").unlink()
+    run = _run(env, job)
+
+    assert run.status == RunStatus.failed
+    assert run.summary["refused_deletions"] == 1, run.summary
+    # Refused means nothing moved on either side.
+    assert (p2 / "one.txt").exists()
+
+
+def test_approving_lets_the_bidirectional_run_through(tmp_path: Path, env) -> None:
+    """The bug this covers: the approval was being checked after the run rather
+    than before it, so every forced run was refused exactly as before."""
+    p1, p2 = _pair(tmp_path)
+    for name in ("one.txt", "two.txt"):
+        (p1 / name).write_text("here\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2, max_delete_pct=20)
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    (p1 / "one.txt").unlink()
+    refused = _run(env, job)
+    assert refused.status == RunStatus.failed
+
+    run = _approved(env, job, refused.summary["refused_deletions"])
+
+    assert run.status == RunStatus.success, run.summary
+    # The deletion propagated, and only that one.
+    assert not (p2 / "one.txt").exists()
+    assert (p2 / "two.txt").exists()
+
+
+def test_a_bidirectional_approval_does_not_authorise_more(tmp_path: Path, env) -> None:
+    p1, p2 = _pair(tmp_path)
+    for name in ("one.txt", "two.txt", "three.txt", "four.txt"):
+        (p1 / name).write_text("here\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2, max_delete_pct=20)
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    (p1 / "one.txt").unlink()
+    refused = _run(env, job)
+    assert refused.summary["refused_deletions"] == 1
+
+    # More disappears before the approval is acted on.
+    (p1 / "two.txt").unlink()
+    (p1 / "three.txt").unlink()
+
+    run = _approved(env, job, 1)
+
+    assert run.status == RunStatus.failed, run.summary
+    # Nothing removed from the other side at all.
+    for name in ("one.txt", "two.txt", "three.txt", "four.txt"):
+        assert (p2 / name).exists(), f"{name} was removed without approval"
+
+
+def test_the_alias_never_reaches_the_message(tmp_path: Path, env) -> None:
+    """rclone quotes the synthetic remote name back, with a {hash} suffix it
+    adds itself. Matching the bare alias stripped nothing."""
+    p1, p2 = _pair(tmp_path)
+    for name in ("one.txt", "two.txt"):
+        (p1 / name).write_text("here\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2, max_delete_pct=20)
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    (p1 / "one.txt").unlink()
+    run = _run(env, job)
+
+    assert "hs_src" not in run.summary["error"], run.summary["error"]
+    assert "hs_dst" not in run.summary["error"]

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -266,12 +267,6 @@ class LiveRunner:
             return
 
         deltas = bisync.parse_deltas(text)
-        approved = run.forced_max_delete
-        if approved is not None and deltas.total_deleted <= approved:
-            # Already agreed to, and still no larger than what was agreed to.
-            # rclone would refuse on its own percentage, so the run carries
-            # --force past that; our own check is what holds the line.
-            return
         if deltas.safety_abort:
             _fail(
                 session,
@@ -313,6 +308,14 @@ class LiveRunner:
             # Handled by the caller after the real attempt; nothing to veto here.
             return
         deltas = bisync.parse_deltas(text)
+
+        approved = run.forced_max_delete
+        if approved is not None and deltas.total_deleted <= approved:
+            # Agreed to already, and still no larger than what was agreed to.
+            # rclone would refuse on its own percentage, so the run carries
+            # --force past that and this check is what holds the line.
+            return
+
         if deltas.safety_abort:
             raise BrakeEngaged(
                 f"rclone refused this run before making any change: "
@@ -835,10 +838,14 @@ def _readable(message: str, prepared: rcloneconf.Prepared) -> str:
     person reading the screen, who typed a connection name and a path.
     """
     for endpoint in prepared.endpoints.values():
+        # rclone appends a {hash} suffix to a remote defined by environment or
+        # connection string, so what it prints is `hs_src{VLeD1}:` and never the
+        # bare alias. Matching the bare name silently stripped nothing.
+        #
         # Removed rather than substituted: bisync already says which side it
         # means ("on Path1"), so the remaining path is the useful part and a
         # replacement word would just be a second name for the same thing.
-        message = message.replace(f"{endpoint.alias}:", "")
+        message = re.sub(rf"{re.escape(endpoint.alias)}(\{{[^}}]*\}})?:", "", message)
     return message
 
 
