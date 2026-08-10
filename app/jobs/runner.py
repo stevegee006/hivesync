@@ -50,6 +50,7 @@ from app.jobs import archive
 from app.jobs.events import RunEvent, activity, broker
 from app.models import (
     ChangeAction,
+    ChangeSide,
     ConnectionType,
     DeleteMode,
     Direction,
@@ -256,7 +257,7 @@ class LiveRunner:
             job.bisync_initialized = True
             session.commit()
 
-        _record_bisync(session, run, job, deltas, observed, exit_code, log_path)
+        _record_bisync(session, run, job, deltas, observed, exit_code, log_path, text)
 
     def _bisync_preflight(
         self, job: Job, prepared: rcloneconf.Prepared, path1: str, path2: str, workdir: str
@@ -645,6 +646,7 @@ def _record_bisync(
     observed: parsers.DryRunLog,
     exit_code: int,
     log_path: Path,
+    text: str,
 ) -> None:
     """Store the outcome of a bidirectional run, per side."""
     cancelled = run.status == RunStatus.cancelled or exit_code in (-15, 143, -9, 137)
@@ -667,6 +669,33 @@ def _record_bisync(
     run.bytes_transferred = sum(op.size or 0 for op in observed.copies)
     run.errors_count = len(observed.errors)
     run.log_path = str(log_path)
+
+    # The files themselves, not just the totals. A one way run has recorded
+    # these since M3; a bidirectional one never did, so its change table read
+    # "Nothing changed" however much it had reconciled.
+    #
+    # Which side each landed on comes from the diff lines, which name it. A
+    # resync emits none, and that case has one honest answer: a resync makes
+    # path2 match path1, so everything lands on the destination.
+    sides = {change.path: change.side for change in bisync.parse_planned_changes(text)}
+    default_side = ChangeSide.dest
+    for op in (observed.copies + removed + observed.archived)[:MAX_PERSISTED_CHANGES]:
+        if op.operation == parsers.SKIPPED_ARCHIVE:
+            action = ChangeAction.archived
+        elif op.operation == parsers.SKIPPED_DELETE:
+            action = ChangeAction.deleted
+        else:
+            action = ChangeAction.updated if op.replaced else ChangeAction.new
+        session.add(
+            JobRunChange(
+                run_id=run.id,
+                action=action,
+                side=sides.get(op.path, default_side),
+                path=op.path,
+                size=op.size,
+            )
+        )
+
     run.summary = {
         "bidirectional": True,
         "resync": run.is_resync,
@@ -680,13 +709,16 @@ def _record_bisync(
             "modified": deltas.path2_modified,
             "deleted": deltas.path2_deleted,
         },
-        # The same keys the summary cards read, aggregated across both sides.
-        # Without them a bidirectional run showed New 0, Updated 0 and Deleted 0
-        # however much it reconciled, because the cards cannot read the per-side
-        # breakdown above. `unchanged` is deliberately absent: bisync does not
-        # report it, and the page shows a dash rather than inventing a zero.
-        "new": deltas.path1_new + deltas.path2_new,
-        "updated": deltas.path1_modified + deltas.path2_modified,
+        # The same keys the summary cards read. Taken from what the run
+        # actually did rather than from the per-side deltas above, because a
+        # **resync emits no delta lines at all**: it makes one side match the
+        # other without a diff phase, so a first sync that copied a file
+        # reported new 0, updated 0 while files_transferred said 1.
+        #
+        # rclone distinguishes them in the copy message either way, which is the
+        # same source the one way summary uses.
+        "new": len(observed.created),
+        "updated": len(observed.replacements),
         "bytes": run.bytes_transferred,
         "transferred": len(observed.copies),
         "deleted": len(removed),

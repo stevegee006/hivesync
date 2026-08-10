@@ -740,8 +740,10 @@ def test_a_bidirectional_live_run_reports_what_it_reconciled() -> None:
     start = runner.rindex("run.summary = {", 0, marker)
     summary = runner[start : runner.index("\n    }", start)]
 
-    assert '"new": deltas.path1_new + deltas.path2_new' in summary
-    assert '"updated": deltas.path1_modified + deltas.path2_modified' in summary
+    # From what the run did, not from the per-side deltas: a resync emits no
+    # delta lines, so deriving these from them reported zero for a first sync.
+    assert '"new": len(observed.created)' in summary
+    assert '"updated": len(observed.replacements)' in summary
     assert '"bytes": run.bytes_transferred' in summary
     # Not invented: bisync does not report files it left alone.
     assert '"unchanged"' not in summary
@@ -787,3 +789,81 @@ def test_every_template_still_compiles() -> None:
     for path in sorted(TEMPLATE_DIR.rglob("*.html")):
         name = path.relative_to(TEMPLATE_DIR).as_posix()
         templates.env.get_template(name)
+
+
+def test_a_bidirectional_live_run_records_the_files_it_moved() -> None:
+    """The counts were right and the table said "Nothing changed", because only
+    the one way runner ever wrote per-file rows."""
+    runner = Path("app/jobs/runner.py").read_text(encoding="utf-8")
+
+    marker = runner.index('"resync": run.is_resync')
+    start = runner.rindex("def _record_bisync", 0, marker)
+    body = runner[start:marker]
+
+    assert "JobRunChange(" in body
+    assert "bisync.parse_planned_changes(text)" in body
+
+
+def test_a_resync_counts_what_it_copied_rather_than_what_it_diffed() -> None:
+    """A resync makes one side match the other with no diff phase, so it emits
+    no per-side delta lines. Deriving the cards from those reported new 0 and
+    updated 0 for a first sync that had plainly copied a file."""
+    runner = Path("app/jobs/runner.py").read_text(encoding="utf-8")
+
+    marker = runner.index('"resync": run.is_resync')
+    start = runner.rindex("run.summary = {", 0, marker)
+    summary = runner[start : runner.index("\n    }", start)]
+
+    assert '"new": len(observed.created)' in summary
+    assert '"updated": len(observed.replacements)' in summary
+
+
+def test_the_change_table_says_which_way_each_file_flowed(
+    authed_client: TestClient, settings
+) -> None:
+    """A bidirectional run can have two rows travelling opposite ways, so the
+    action and path alone do not say where a file came from."""
+    from app.models import (
+        ChangeAction,
+        ChangeSide,
+        JobRun,
+        JobRunChange,
+        RunMode,
+        RunStatus,
+        RunTrigger,
+    )
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="UltraCC", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="Synology", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(name="Flowed", source_connection_id=source.id, dest_connection_id=dest.id, filters={})
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id,
+        trigger=RunTrigger.manual,
+        mode=RunMode.dry_run,
+        status=RunStatus.success,
+        summary={"new": 1, "updated": 1},
+    )
+    session.add(run)
+    session.commit()
+    session.add_all(
+        [
+            JobRunChange(
+                run_id=run.id, action=ChangeAction.new, side=ChangeSide.dest, path="down.txt"
+            ),
+            JobRunChange(
+                run_id=run.id, action=ChangeAction.new, side=ChangeSide.source, path="up.txt"
+            ),
+        ]
+    )
+    session.commit()
+
+    page = authed_client.get(f"/runs/{run.id}").text
+
+    assert ">Flow</th>" in page
+    # Both directions are named, using the connections rather than "source".
+    assert "UltraCC" in page and "Synology" in page

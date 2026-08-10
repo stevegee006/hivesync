@@ -37,11 +37,13 @@ DRY_RUN_OUTPUT = """
 def test_each_side_of_a_dry_run_is_classified() -> None:
     changes = bisync.parse_planned_changes(DRY_RUN_OUTPUT)
 
+    # The side is where the change lands, not where it was detected: a
+    # difference seen on Path1 is applied to Path2. See _LANDS_ON.
     assert [(c.side.value, c.action.value, c.path) for c in changes] == [
-        ("source", "deleted", "willgo.txt"),
-        ("source", "new", "new1.txt"),
-        ("source", "updated", "docs/mod1.txt"),
-        ("dest", "new", "new2.txt"),
+        ("dest", "deleted", "willgo.txt"),
+        ("dest", "new", "new1.txt"),
+        ("dest", "updated", "docs/mod1.txt"),
+        ("source", "new", "new2.txt"),
     ]
 
 
@@ -110,3 +112,21 @@ def test_plain_text_output_still_parses() -> None:
     changes = bisync.parse_planned_changes(line)
 
     assert [c.path for c in changes] == ["typed-by-hand.txt"]
+
+
+def test_a_change_is_recorded_against_the_side_it_lands_on() -> None:
+    """`JobRunChange.side` means where a change lands, which is what
+    `rclone.side_for` documents and the one way planner writes. bisync names the
+    side a difference was *detected* on, and those are opposites: a file new on
+    Path1 gets copied to Path2. Recording the detected side would give the
+    column two meanings depending on which engine wrote the row.
+    """
+    changes = bisync.parse_planned_changes(DRY_RUN_OUTPUT)
+    landing = {c.path: c.side.value for c in changes}
+
+    # Detected on Path1, so it is copied to Path2, which is the destination.
+    assert landing["new1.txt"] == "dest"
+    assert landing["docs/mod1.txt"] == "dest"
+    assert landing["willgo.txt"] == "dest"
+    # Detected on Path2, so it travels the other way.
+    assert landing["new2.txt"] == "source"

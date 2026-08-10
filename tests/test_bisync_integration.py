@@ -442,9 +442,12 @@ def test_a_bidirectional_dry_run_reports_both_sides(tmp_path: Path, env) -> None
     assert run.status == RunStatus.success, run.summary
     changes = session.query(JobRunChange).filter_by(run_id=run.id).all()
     by_path = {c.path: (c.side.value, c.action.value) for c in changes}
-    assert by_path["only-on-one.txt"] == ("source", "new")
-    assert by_path["only-on-two.txt"] == ("dest", "new")
-    assert by_path["shared.txt"] == ("source", "deleted")
+    # The side is where the change lands, matching what `rclone.side_for`
+    # documents: a file that appeared on path1 is copied to path2, and a file
+    # removed from path1 is removed from path2.
+    assert by_path["only-on-one.txt"] == ("dest", "new")
+    assert by_path["only-on-two.txt"] == ("source", "new")
+    assert by_path["shared.txt"] == ("dest", "deleted")
 
 
 def test_a_dry_run_changes_nothing_on_either_side(tmp_path: Path, env) -> None:
@@ -496,3 +499,46 @@ def test_the_brake_is_reported_as_a_percentage_not_a_count(tmp_path: Path, env) 
 
     assert run.summary["bidirectional"] is True
     assert run.summary["max_delete_threshold"] == 25
+
+
+def test_a_live_run_records_the_files_it_moved(tmp_path: Path, env) -> None:
+    """The counts were right and the change table said "Nothing changed",
+    because only the one way runner ever wrote per-file rows."""
+    p1, p2 = _pair(tmp_path)
+    (p1 / "shared.txt").write_text("same\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2)
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    (p1 / "from-one.txt").write_text("one\n", encoding="utf-8")
+    (p2 / "from-two.txt").write_text("two\n", encoding="utf-8")
+
+    run = _run(env, job)
+
+    assert run.status == RunStatus.success, run.summary
+    changes = session.query(JobRunChange).filter_by(run_id=run.id).all()
+    by_path = {c.path: c.side.value for c in changes}
+    assert "from-one.txt" in by_path, f"only recorded {sorted(by_path)}"
+    assert "from-two.txt" in by_path
+    # Landing sides, so a file that appeared on path1 lands on the destination.
+    assert by_path["from-one.txt"] == "dest"
+    assert by_path["from-two.txt"] == "source"
+
+
+def test_a_first_sync_counts_what_it_copied(tmp_path: Path, env) -> None:
+    """A resync emits no per-side delta lines, so counts derived from those read
+    zero for a first sync that had plainly copied a file."""
+    p1, p2 = _pair(tmp_path)
+    (p1 / "a.txt").write_text("hello\n", encoding="utf-8")
+    (p1 / "b.txt").write_text("world\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+
+    run = _run(env, _job(session, p1, p2), resync=True)
+
+    assert run.status == RunStatus.success, run.summary
+    assert run.summary["resync"] is True
+    assert run.summary["new"] == 2, run.summary
+    assert run.files_transferred == 2
+    # And the files are listed, not just counted.
+    changes = session.query(JobRunChange).filter_by(run_id=run.id).all()
+    assert sorted(c.path for c in changes) == ["a.txt", "b.txt"]

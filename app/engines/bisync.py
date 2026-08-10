@@ -95,9 +95,14 @@ _CHANGE_RE = re.compile(
     r"-\s+(Path1|Path2)\s+(File is new|File was deleted|File changed[^-]*?)\s+-\s+(\S.*?)\s*$"
 )
 
-# Which of the two paths a change was seen on. Path1 is the job's source
-# connection and Path2 its destination, which is how the command is built.
-_SIDE_FOR_PATH = {"Path1": ChangeSide.source, "Path2": ChangeSide.dest}
+# `JobRunChange.side` means the side a change **lands on**, which is what
+# `rclone.side_for` documents and what the one way planner writes. bisync names
+# the side a difference was *detected* on, and those are opposites: a file that
+# is new on Path1 gets copied to Path2, so it lands on Path2.
+#
+# Recording the detected side instead would give the column two meanings
+# depending on which engine wrote the row.
+_LANDS_ON = {"Path1": ChangeSide.dest, "Path2": ChangeSide.source}
 
 _ACTION_FOR_DIFF = {
     "File is new": ChangeAction.new,
@@ -152,7 +157,7 @@ def parse_planned_changes(text: str) -> list[PlannedChange]:
                 action=action,
                 path=path,
                 message=detail,
-                side=_SIDE_FOR_PATH[side_name],
+                side=_LANDS_ON[side_name],
             )
         )
     return changes
