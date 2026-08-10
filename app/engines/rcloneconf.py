@@ -26,6 +26,7 @@ from __future__ import annotations
 import configparser
 import json
 import logging
+import re
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -325,6 +326,24 @@ class Prepared:
     env: dict[str, str]
     base_args: list[str]
     redactor: Redactor
+
+    def readable(self, message: str) -> str:
+        """Strip the synthetic run aliases out of a message rclone produced.
+
+        A run invents `hs_src` and `hs_dst` for the length of one process and
+        rclone quotes them back in its own errors, where they mean nothing to
+        someone who typed a connection name and a path.
+
+        rclone appends a `{hash}` suffix to a remote defined by environment
+        variables, so what it prints is `hs_src{VLeD1}:` and never the bare
+        alias. Matching the alias alone strips nothing at all.
+
+        Removed rather than replaced: bisync already names the side it means
+        ("on Path1"), so the remaining path is the useful part.
+        """
+        for endpoint in self.endpoints.values():
+            message = re.sub(rf"{re.escape(endpoint.alias)}(\{{[^}}]*\}})?:", "", message)
+        return message
 
     def argv(self, *args: str) -> list[str]:
         # --color NEVER, because bisync colours its output and ANSI escapes in a

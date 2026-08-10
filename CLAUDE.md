@@ -369,6 +369,8 @@ admin. SQLite serialises writers, so the loser's own commit reveals the race.
 - 2026-08-10, rclone, **it appends a `{hash}` suffix to a remote defined by environment variables**, so what it prints is `hs_src{VLeD1}:` and never the bare alias. Stripping the alias by exact match therefore removed nothing, and the synthetic name kept reaching the screen. Match the alias followed by an optional `{...}`.
 - 2026-08-10, process, the one way approval path had integration coverage and the bidirectional one did not, so a feature that was broken for bidirectional jobs passed everything. Two engines implement the same user-facing action; a test for one of them is evidence about one of them.
 
+- 2026-08-10, process, **the same rclone message is surfaced in three places**: the dry run warning in `BisyncEngine.plan`, the live pre-flight, and the post-run failure. Stripping the run alias in one of them and reporting it fixed left it on screen in the other two, including the dry run, which is the mode people use to decide whether to run anything. `Prepared.readable` is now the only implementation, on the object that owns the aliases, and `test_no_message_that_quotes_the_safety_abort_leaves_the_alias_in` fails if any file interpolates the raw text again. Before claiming a message is fixed, grep for the thing it interpolates.
+
 ### M1 acceptance status, verified 2026-08-05
 
 All four criteria pass. 167 unit tests, 12 integration tests against live SFTP,

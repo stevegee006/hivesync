@@ -643,3 +643,22 @@ def test_the_alias_never_reaches_the_message(tmp_path: Path, env) -> None:
 
     assert "hs_src" not in run.summary["error"], run.summary["error"]
     assert "hs_dst" not in run.summary["error"]
+
+
+def test_a_dry_run_warning_does_not_leak_the_alias_either(tmp_path: Path, env) -> None:
+    """The live path was fixed and the dry run was not, so the alias stayed on
+    screen for the mode people use to decide whether to run anything."""
+    p1, p2 = _pair(tmp_path)
+    for name in ("one.txt", "two.txt"):
+        (p1 / name).write_text("here\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2, max_delete_pct=20)
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    (p1 / "one.txt").unlink()
+    run = _dry_run(env, job)
+
+    warnings = " ".join(run.summary.get("warnings", []))
+    assert "would refuse" in warnings, run.summary
+    assert "hs_src" not in warnings, warnings
+    assert "hs_dst" not in warnings

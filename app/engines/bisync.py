@@ -453,7 +453,8 @@ class BisyncEngine(SyncEngine):
             # Not an error: it is the answer. rclone refused before changing
             # anything, and saying so is the whole point of a preview.
             plan.warnings.append(
-                f"rclone would refuse this run: {deltas.safety_abort} "
+                f"rclone would refuse this run: "
+                f"{prepared.readable(deltas.safety_abort)} "
                 "Check that both endpoints are fully mounted. If the deletions "
                 "are intended, raise the delete brake."
             )

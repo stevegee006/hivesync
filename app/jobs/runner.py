@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -271,7 +270,8 @@ class LiveRunner:
             _fail(
                 session,
                 run,
-                f"rclone refused this run: {deltas.safety_abort} Nothing was "
+                f"rclone refused this run: {prepared.readable(deltas.safety_abort)} "
+                "Nothing was "
                 "changed. Check that both endpoints are fully mounted. If the "
                 "deletions are intended, raise the delete brake for this job.",
             )
@@ -319,7 +319,7 @@ class LiveRunner:
         if deltas.safety_abort:
             raise BrakeEngaged(
                 f"rclone refused this run before making any change: "
-                f"{_readable(deltas.safety_abort, prepared)} Check that both "
+                f"{prepared.readable(deltas.safety_abort)} Check that both "
                 "endpoints are fully mounted. If the deletions are intended, "
                 "run it anyway from the run page.",
                 deletions=deltas.total_deleted,
@@ -828,25 +828,6 @@ def _prune_quiet_cycle(session: Session, run: JobRun, job: Job) -> None:
     session.delete(run)
     job.last_checked_at = utcnow()
     session.commit()
-
-
-def _readable(message: str, prepared: rcloneconf.Prepared) -> str:
-    """Replace the synthetic run aliases in an rclone message.
-
-    A run invents `hs_src:` and `hs_dst:` names for the length of the process,
-    and rclone quotes them back in its own errors. They mean nothing to the
-    person reading the screen, who typed a connection name and a path.
-    """
-    for endpoint in prepared.endpoints.values():
-        # rclone appends a {hash} suffix to a remote defined by environment or
-        # connection string, so what it prints is `hs_src{VLeD1}:` and never the
-        # bare alias. Matching the bare name silently stripped nothing.
-        #
-        # Removed rather than substituted: bisync already says which side it
-        # means ("on Path1"), so the remaining path is the useful part and a
-        # replacement word would just be a second name for the same thing.
-        message = re.sub(rf"{re.escape(endpoint.alias)}(\{{[^}}]*\}})?:", "", message)
-    return message
 
 
 def _fail(

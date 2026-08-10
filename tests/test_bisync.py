@@ -130,3 +130,36 @@ def test_a_change_is_recorded_against_the_side_it_lands_on() -> None:
     assert landing["willgo.txt"] == "dest"
     # Detected on Path2, so it travels the other way.
     assert landing["new2.txt"] == "source"
+
+
+def test_no_message_that_quotes_the_safety_abort_leaves_the_alias_in() -> None:
+    """Three places surface rclone's abort text: the dry run warning, the live
+    pre-flight and the post-run failure. Fixing one of them left the alias on
+    screen for the other two, which is what a reader actually saw.
+
+    Reads the source rather than rendering, because the point is that every
+    site goes through the one implementation.
+    """
+    import pathlib
+
+    for path in ("app/engines/bisync.py", "app/jobs/runner.py"):
+        body = pathlib.Path(path).read_text(encoding="utf-8")
+        assert "{deltas.safety_abort}" not in body, (
+            f"{path} interpolates the raw abort text, so the synthetic run alias "
+            "reaches the screen. Use prepared.readable()."
+        )
+
+
+def test_the_alias_strip_handles_the_hash_suffix_rclone_adds() -> None:
+    """rclone appends {hash} to a remote defined by environment variables, so
+    matching the bare alias removed nothing at all."""
+    from app.engines.rcloneconf import Endpoint, Prepared, Redactor
+
+    endpoint = Endpoint(alias="hs_src", path="/x", env={}, redactable=(), uses_user_config=False)
+    prepared = Prepared(endpoints={"hs_src": endpoint}, env={}, base_args=[], redactor=Redactor(()))
+
+    suffixed = 'too many deletes on Path1 "hs_src{Eidmi}:Backups/old/source/".'
+    bare = 'too many deletes on Path1 "hs_src:Backups/old/source/".'
+
+    assert prepared.readable(suffixed) == 'too many deletes on Path1 "Backups/old/source/".'
+    assert prepared.readable(bare) == 'too many deletes on Path1 "Backups/old/source/".'
