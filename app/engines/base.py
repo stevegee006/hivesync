@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from app.config import Settings
 from app.crypto import SecretBox
-from app.models import ChangeAction, Job
+from app.models import ChangeAction, ChangeSide, Job
 
 
 class EngineError(Exception):
@@ -33,6 +33,11 @@ class PlannedChange:
     path: str
     size: int | None = None
     message: str | None = None
+    # Which endpoint the change lands on. None means "the side this job writes
+    # to", which is the only answer for a one way job. A bidirectional plan sets
+    # it per change, because bisync changes both sides in the same run and a
+    # preview that did not say which would be worse than none.
+    side: ChangeSide | None = None
 
 
 @dataclass

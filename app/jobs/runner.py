@@ -685,6 +685,11 @@ def _record_bisync(
         "archived": len(observed.archived),
         "errors": parsers.summarise_errors(observed.errors),
         # A percentage for bisync, not a count. See app/engines/bisync.py.
+        # `max_delete_threshold` is the key the run page reads, and it is the
+        # percentage unchanged: resolving it to a count the way a one way job
+        # does would name a threshold rclone does not enforce. `bidirectional`
+        # is set at the top of this summary and is what selects that wording.
+        "max_delete_threshold": job.max_delete_pct,
         "max_delete_pct": job.max_delete_pct,
         "cancelled_partway": cancelled and bool(observed.copies or removed),
     }

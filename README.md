@@ -11,7 +11,7 @@ Scheduled and continuous sync &bull; Dry runs before anything moves &bull; Delet
 [![version](https://img.shields.io/badge/version-0.2.4-3fb950)](https://github.com/stevegee006/hivesync/releases)
 [![docker](https://img.shields.io/badge/docker-geaves006%2Fhivesync-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/geaves006/hivesync)
 [![platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-555)](https://hub.docker.com/r/geaves006/hivesync/tags)
-[![license](https://img.shields.io/badge/license-not%20yet%20chosen-lightgrey)](#license)
+[![license](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -724,4 +724,11 @@ README walkthrough all run against real servers rather than against fakes.
 
 ## License
 
-Not yet chosen.
+MIT. See [LICENSE](LICENSE). Use it, change it, ship it, sell it; keep the
+copyright notice and accept that it comes with no warranty.
+
+rclone and lftp are separate programs, driven as subprocesses rather than
+linked as libraries, so their licences apply to them and not to HiveSync. Both
+are redistributed inside the published image under their own terms: rclone is
+MIT, and lftp is GPL-3 (Debian's `lftp` package, unmodified, whose source is
+available from Debian).

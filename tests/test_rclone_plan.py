@@ -199,10 +199,27 @@ def test_side_recorded_matches_the_side_written() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_bidirectional_is_refused_with_an_explanation() -> None:
+def test_the_one_way_engine_refuses_a_bidirectional_job() -> None:
+    """A guard, not a limitation. Bidirectional jobs are planned by
+    BisyncEngine, which `planner.engine_for` selects; reaching this means
+    something called the wrong engine directly.
+
+    It used to be the limitation, and the message promised a milestone that had
+    already shipped, so a dry run of a bidirectional job failed telling the
+    reader to wait for a feature they already had."""
     engine = rclone.RcloneEngine()
-    with pytest.raises(EngineError, match="Bidirectional"):
+    with pytest.raises(EngineError, match="one way jobs only"):
         engine.plan(_job(direction=Direction.bidirectional), box=None, settings=None)  # type: ignore[arg-type]
+
+
+def test_the_planner_routes_a_bidirectional_job_to_bisync() -> None:
+    """The actual fix. Without this branch every bidirectional dry run hit the
+    one way engine and was refused."""
+    from app.engines.bisync import BisyncEngine
+    from app.jobs.planner import engine_for
+
+    assert isinstance(engine_for(_job(direction=Direction.bidirectional)), BisyncEngine)
+    assert isinstance(engine_for(_job(direction=Direction.source_to_dest)), rclone.RcloneEngine)
 
 
 def test_execute_directs_callers_to_the_runner() -> None:

@@ -37,10 +37,21 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
-from app.engines.rclone import comparison_args, filter_args, performance_args
-from app.engines.rcloneconf import ALIAS_DEST, ALIAS_SOURCE, Prepared
-from app.models import ConflictResolve, Job
+from app.config import Settings
+from app.crypto import SecretBox
+from app.engines import process, rcloneconf
+from app.engines.base import EngineError, Plan, PlannedChange, SyncEngine
+from app.engines.rclone import (
+    PLAN_TIMEOUT_SECONDS,
+    comparison_args,
+    endpoints_and_paths,
+    filter_args,
+    performance_args,
+)
+from app.engines.rcloneconf import ALIAS_DEST, ALIAS_SOURCE, Prepared, RemoteConfigError
+from app.models import ChangeAction, ChangeSide, ConflictResolve, Direction, Job
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +73,89 @@ SAFETY_ABORT_MARKER = "Run with --force if desired"
 _DELTA_RE = re.compile(
     r"(Path1|Path2):\s+\d+ changes:\s+(\d+) new,\s+(\d+) modified,\s+(\d+) deleted"
 )
+
+# The per-file diff lines, which is what makes a bidirectional dry run useful
+# rather than just a pair of totals.
+#
+# **The command passes --use-json-log**, so what arrives is not the plain text a
+# human sees at a terminal. Captured verbatim from rclone 1.74.4:
+#
+#   {"time":"...","level":"notice",
+#    "msg":"- Path1             File is new              - one.txt",
+#    "source":"bisync/deltas.go:259"}
+#
+# The line to match is inside `msg`. Matching the raw JSON line would capture
+# the trailing `","source":"..."}` as part of the filename, which is exactly
+# what happened when this was first written against hand-run output.
+#
+# The path is relative, which is what to show. The "Queue copy to Path2" lines
+# that follow carry the same information as an absolute destination path, and
+# are deliberately not parsed: two sources for one fact drift apart.
+_CHANGE_RE = re.compile(
+    r"-\s+(Path1|Path2)\s+(File is new|File was deleted|File changed[^-]*?)\s+-\s+(\S.*?)\s*$"
+)
+
+# Which of the two paths a change was seen on. Path1 is the job's source
+# connection and Path2 its destination, which is how the command is built.
+_SIDE_FOR_PATH = {"Path1": ChangeSide.source, "Path2": ChangeSide.dest}
+
+_ACTION_FOR_DIFF = {
+    "File is new": ChangeAction.new,
+    "File was deleted": ChangeAction.deleted,
+}
+
+
+def _messages(text: str) -> list[str]:
+    """The human readable lines, whichever log format produced them.
+
+    Under `--use-json-log` each line is an object whose `msg` carries the text,
+    and a `msg` can itself contain newlines. Anything that is not JSON is passed
+    through unchanged, so output captured at a terminal still parses.
+    """
+    lines: list[str] = []
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped.startswith("{"):
+            lines.append(raw)
+            continue
+        try:
+            payload = json.loads(stripped)
+        except ValueError:
+            lines.append(raw)
+            continue
+        message = payload.get("msg") if isinstance(payload, dict) else None
+        if isinstance(message, str):
+            lines.extend(message.splitlines())
+    return lines
+
+
+def parse_planned_changes(text: str) -> list[PlannedChange]:
+    """Read the per-file differences out of a bisync dry run.
+
+    Tolerant in the same way `parse_deltas` is: an unrecognised line is skipped
+    rather than raising, because a wording change should cost detail on a
+    preview screen, not block every bidirectional job.
+    """
+    changes: list[PlannedChange] = []
+    for line in _messages(text):
+        match = _CHANGE_RE.search(line)
+        if match is None:
+            continue
+        side_name, diff, path = match.group(1), match.group(2).strip(), match.group(3)
+        # Anything that is not new or deleted is a modification, and rclone
+        # spells out which attributes moved: keep that as the message rather
+        # than flattening every variant to "updated".
+        action = _ACTION_FOR_DIFF.get(diff, ChangeAction.updated)
+        detail = diff if action is ChangeAction.updated else None
+        changes.append(
+            PlannedChange(
+                action=action,
+                path=path,
+                message=detail,
+                side=_SIDE_FOR_PATH[side_name],
+            )
+        )
+    return changes
 
 
 def workdir_for(settings_bisync_dir: str, job_id: int) -> str:
@@ -276,3 +370,103 @@ __all__ = [
     "parse_deltas",
     "workdir_for",
 ]
+
+
+class BisyncEngine(SyncEngine):
+    """Planning for a bidirectional job.
+
+    Separate from RcloneEngine because bisync is a different command with its
+    own semantics, not a flag on `sync`. The two most important differences are
+    both load bearing here:
+
+    - `--max-delete` is a **percentage** for bisync and a count for sync, so the
+      threshold a one way plan reports would be meaningless on this screen.
+    - A dry run needs prior listings. bisync copies the real ones into `.lst-dry`
+      files, so a job that has never been resynced cannot be previewed at all,
+      and says so rather than reporting an empty plan.
+    """
+
+    name = "bisync"
+
+    def plan(self, job: Job, *, box: SecretBox, settings: Settings) -> Plan:
+        if job.direction != Direction.bidirectional:
+            raise EngineError("BisyncEngine plans bidirectional jobs only.")
+
+        if not job.bisync_initialized:
+            raise EngineError(
+                f"'{job.name}' has not had its first sync yet, so there is "
+                "nothing to compare against and a preview would be empty rather "
+                "than reassuring. Use First Sync on the job, then dry run it."
+            )
+
+        workdir = workdir_for(str(settings.bisync_dir), job.id)
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+
+        # The same resolution the runner uses, so a preview and the run it
+        # previews cannot disagree about which connection is which.
+        source, dest, read_path, write_path = endpoints_and_paths(job)
+        connections = {ALIAS_SOURCE: source, ALIAS_DEST: dest}
+
+        try:
+            with rcloneconf.prepare(connections, box=box, settings=settings) as prepared:
+                path1 = prepared.endpoints[ALIAS_SOURCE].spec(read_path or None)
+                path2 = prepared.endpoints[ALIAS_DEST].spec(write_path or None)
+                argv = build_bisync_command(
+                    job, prepared, path1, path2, workdir=workdir, dry_run=True
+                )
+                result = process.run(
+                    argv,
+                    env=prepared.env,
+                    redactor=prepared.redactor,
+                    timeout_seconds=PLAN_TIMEOUT_SECONDS,
+                    log_label="bisync --dry-run",
+                )
+                command = result.command_line
+        except RemoteConfigError as exc:
+            raise EngineError(str(exc)) from exc
+
+        text = result.stdout + "\n" + result.stderr
+        deltas = parse_deltas(text)
+
+        if deltas.resync_required:
+            raise EngineError(
+                f"'{job.name}' needs a first sync before it can be previewed. Its "
+                "listing state is missing, which happens if the working directory "
+                "was lost. Use First Sync to rebuild it."
+            )
+
+        plan = Plan(changes=parse_planned_changes(text), commands=[command])
+
+        if deltas.safety_abort:
+            # Not an error: it is the answer. rclone refused before changing
+            # anything, and saying so is the whole point of a preview.
+            plan.warnings.append(
+                f"rclone would refuse this run: {deltas.safety_abort} "
+                "Check that both endpoints are fully mounted. If the deletions "
+                "are intended, raise the delete brake."
+            )
+
+        # The counts rclone reports per side are the authority. The per-file
+        # lines are for display, and a wording change should cost detail rather
+        # than making the totals wrong.
+        counted = (
+            deltas.path1_new
+            + deltas.path1_modified
+            + deltas.path1_deleted
+            + deltas.path2_new
+            + deltas.path2_modified
+            + deltas.path2_deleted
+        )
+        if counted != len(plan.changes):
+            plan.warnings.append(
+                f"rclone counted {counted} changes but named {len(plan.changes)}. "
+                "The totals are rclone's own; the list below may be incomplete."
+            )
+
+        return plan
+
+    def execute(self, job: Job, *, box: SecretBox, settings: Settings) -> Plan:
+        """Not used. A live bisync is streamed and cancelled by the job runner."""
+        raise EngineError(
+            "Live runs are driven by the job runner, not by calling execute directly."
+        )

@@ -412,9 +412,14 @@ def test_the_run_page_reads_keys_that_a_live_run_actually_writes() -> None:
     written = set(re.findall(r'"([a-z_]+)":', runner[start : runner.index("\n    }", start)]))
 
     missing = {key for key in read if key not in written}
-    # `warnings` and `errors` are lists rather than counts, and `rows_omitted`
-    # is set by the page's own query, so they are not expected here.
-    missing -= {"rows_omitted"}
+    # `rows_omitted` is set by the page's own query rather than by a run.
+    #
+    # `bidirectional` is a flag whose absence is the correct answer: this is the
+    # one way summary, and a missing boolean reads as False, which is true. The
+    # bisync summary writes it, and `test_a_live_bisync_run_reports_its_own_brake`
+    # covers that. The rule this test enforces is about *counts*, where a missing
+    # key is indistinguishable from a real zero and silently renders as one.
+    missing -= {"rows_omitted", "bidirectional"}
     assert not missing, (
         f"the run page reads {sorted(missing)} which no live run writes, so they "
         "will silently render as zero"
@@ -638,3 +643,21 @@ def test_a_poll_that_lands_on_the_login_page_does_not_blank_the_dashboard() -> N
 
     assert "htmx:beforeSwap" in base
     assert "/login" in base
+
+
+def test_a_live_bisync_run_reports_its_own_brake() -> None:
+    """--max-delete is a percentage for bisync and a count for sync, so the run
+    page needs to know which it is looking at. Without the flag a live
+    bidirectional run showed the count based sentence, naming a threshold rclone
+    does not enforce."""
+    runner = Path("app/jobs/runner.py").read_text(encoding="utf-8")
+
+    # Anchored on a neighbouring key that is not itself under test, so the slice
+    # covers the whole bisync summary rather than starting after the key being
+    # asserted on.
+    marker = runner.index('"resync": run.is_resync')
+    start = runner.rindex("run.summary = {", 0, marker)
+    summary = runner[start : runner.index("\n    }", start)]
+
+    assert '"bidirectional": True' in summary
+    assert '"max_delete_threshold": job.max_delete_pct' in summary

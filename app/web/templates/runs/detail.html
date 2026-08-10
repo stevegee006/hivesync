@@ -214,10 +214,18 @@
   {# Tense matters here: a live run has already done it. #}
   {{ summary.get('bytes', 0) | filesize }}
   {{ 'would transfer' if run.mode.value == 'dry_run' else 'transferred' }}.
+  {% if summary.get('bidirectional') %}
+  {# Verified against rclone 1.74.4: --max-delete is a percentage for bisync and
+     a count for sync. Reporting a resolved count here would name a threshold
+     rclone does not enforce. #}
+  Either side may lose up to {{ summary.get('max_delete_threshold', 0) }}% of its
+  files before rclone aborts the run without changing anything.
+  {% else %}
   The destination holds
   {{ summary.get('dest_file_count', 0) }} files, so the
   {{ job.max_delete_pct }}% brake allows {{ summary.get('max_delete_threshold', 1) }}
   deletions.
+  {% endif %}
   {% if summary.get('rows_omitted') %}
   Only the first rows are listed: {{ summary['rows_omitted'] }} more are not shown.
   {% endif %}

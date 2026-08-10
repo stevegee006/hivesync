@@ -59,10 +59,12 @@ class RcloneEngine(SyncEngine):
 
     def plan(self, job: Job, *, box: SecretBox, settings: Settings) -> Plan:
         if job.direction == Direction.bidirectional:
+            # A guard, not a limitation: bidirectional jobs are planned by
+            # BisyncEngine, which the planner selects. Reaching here means
+            # something called the wrong engine directly.
             raise EngineError(
-                "Bidirectional jobs cannot be planned yet. bisync, its resync "
-                "gating and its conflict handling arrive in a later milestone. "
-                "Use a one way direction for now."
+                "RcloneEngine plans one way jobs only. Bidirectional jobs are "
+                "planned by BisyncEngine."
             )
 
         source, dest = _endpoints_for(job)

@@ -2,6 +2,8 @@
 name = "hivesync"
 version = "0.2.4"
 description = "Dockerized file sync orchestrator that drives rclone and lftp"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115,<1.0",
@@ -73,6 +75,7 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header"]
 "migrations/*" = ["ANN", "E501"]         # generated-style migration bodies
 # Captured rclone output, kept verbatim. Wrapping it would falsify the sample.
 "tests/test_parsers.py" = ["E501"]
+"tests/test_bisync.py" = ["E501"]
 # S105 flags string literals whose name looks credential-like. In these three the
 # literal is an identifier: an enum member describing a credential kind, or a
 # settings key. No secret value appears in source anywhere.

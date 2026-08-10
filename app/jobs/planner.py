@@ -27,10 +27,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
 from app.crypto import SecretBox
-from app.engines.base import EngineError, Plan
+from app.engines.base import EngineError, Plan, SyncEngine
+from app.engines.bisync import BisyncEngine
 from app.engines.rclone import RcloneEngine, side_for
 from app.jobs.events import RunEvent, broker
 from app.models import (
+    Direction,
     Engine,
     Job,
     JobRun,
@@ -56,12 +58,21 @@ class PlannerBusy(Exception):
     """The global concurrency cap is reached."""
 
 
-def engine_for(job: Job) -> RcloneEngine:
+def engine_for(job: Job) -> SyncEngine:
+    """The engine that plans this job.
+
+    Bidirectional jobs go to bisync, which is a different command with its own
+    semantics rather than a flag on `sync`. Until this branch existed, a dry run
+    of a bidirectional job hit RcloneEngine and was refused, so the one mode
+    that can damage both copies was the one you could not preview.
+    """
     if job.engine != Engine.rclone:
         raise EngineError(
             f"The {job.engine.value} engine is not implemented. Only rclone can "
             "run jobs at present."
         )
+    if job.direction == Direction.bidirectional:
+        return BisyncEngine()
     return RcloneEngine()
 
 
@@ -186,7 +197,10 @@ def _persist_plan(session: Session, run: JobRun, job: Job, plan: Plan) -> None:
             JobRunChange(
                 run_id=run.id,
                 action=change.action,
-                side=side,
+                # A bidirectional plan sets this per change, because bisync
+                # changes both sides in one run. One way plans leave it unset
+                # and every change lands on the side the job writes to.
+                side=change.side or side,
                 path=change.path,
                 size=change.size,
                 message=change.message,
@@ -213,6 +227,9 @@ def _persist_plan(session: Session, run: JobRun, job: Job, plan: Plan) -> None:
         "bytes": plan.bytes_to_transfer,
         "dest_file_count": plan.dest_file_count,
         "max_delete_threshold": _threshold(job, plan),
+        # The brake means different things in the two directions, so the page
+        # cannot word it from the numbers alone.
+        "bidirectional": job.direction == Direction.bidirectional,
         "truncated": plan.truncated,
         "rows_omitted": truncated_rows,
     }
@@ -230,6 +247,16 @@ def _persist_plan(session: Session, run: JobRun, job: Job, plan: Plan) -> None:
 
 
 def _threshold(job: Job, plan: Plan) -> int:
+    """The number the delete brake will actually enforce.
+
+    For bisync `--max-delete` is a **percentage**, not a count, so converting it
+    the way a one way job does would report a threshold that has nothing to do
+    with what rclone enforces. The percentage is returned unchanged and the run
+    page words it differently.
+    """
+    if job.direction == Direction.bidirectional:
+        return job.max_delete_pct
+
     from app.engines.rclone import resolve_max_delete
 
     return resolve_max_delete(job.max_delete_pct, plan.dest_file_count)

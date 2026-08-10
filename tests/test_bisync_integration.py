@@ -30,6 +30,7 @@ from app.models import (
     Direction,
     Job,
     JobRun,
+    JobRunChange,
     RunMode,
     RunStatus,
     RunTrigger,
@@ -402,3 +403,96 @@ def test_check_access_is_opt_in() -> None:
 
     assert "--check-access" not in argv_with(False)
     assert "--check-access" in argv_with(True)
+
+
+# --------------------------------------------------------------------------
+# Dry running a bidirectional job
+#
+# This was refused outright until BisyncEngine existed, so the one direction
+# that can damage both copies was the one that could not be previewed.
+# --------------------------------------------------------------------------
+
+
+def _dry_run(env, job: Job) -> JobRun:
+    settings, box, factory, session = env
+    run = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.dry_run)
+    planner.PlanRunner(factory, box=box, settings=settings).run_now(run.id)
+    session.expire_all()
+    stored = session.get(JobRun, run.id)
+    assert stored is not None
+    return stored
+
+
+def test_a_bidirectional_dry_run_reports_both_sides(tmp_path: Path, env) -> None:
+    """The whole point: see what would happen to each side before it happens."""
+    p1, p2 = _pair(tmp_path)
+    (p1 / "shared.txt").write_text("same\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2)
+
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    # One new file on each side, and one removed from path1.
+    (p1 / "only-on-one.txt").write_text("one\n", encoding="utf-8")
+    (p2 / "only-on-two.txt").write_text("two\n", encoding="utf-8")
+    (p1 / "shared.txt").unlink()
+
+    run = _dry_run(env, job)
+
+    assert run.status == RunStatus.success, run.summary
+    changes = session.query(JobRunChange).filter_by(run_id=run.id).all()
+    by_path = {c.path: (c.side.value, c.action.value) for c in changes}
+    assert by_path["only-on-one.txt"] == ("source", "new")
+    assert by_path["only-on-two.txt"] == ("dest", "new")
+    assert by_path["shared.txt"] == ("source", "deleted")
+
+
+def test_a_dry_run_changes_nothing_on_either_side(tmp_path: Path, env) -> None:
+    """A dry run modifies nothing. That is the invariant, and bisync writes to
+    both sides, so there are two chances to break it."""
+    p1, p2 = _pair(tmp_path)
+    (p1 / "shared.txt").write_text("same\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2)
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    (p1 / "new-one.txt").write_text("one\n", encoding="utf-8")
+    (p2 / "new-two.txt").write_text("two\n", encoding="utf-8")
+    before1 = sorted(f.name for f in p1.iterdir())
+    before2 = sorted(f.name for f in p2.iterdir())
+
+    _dry_run(env, job)
+
+    assert sorted(f.name for f in p1.iterdir()) == before1
+    assert sorted(f.name for f in p2.iterdir()) == before2
+
+
+def test_a_job_with_no_first_sync_says_so_rather_than_reporting_nothing(
+    tmp_path: Path, env
+) -> None:
+    """An empty plan would read as "nothing would change", which is the opposite
+    of the truth: nothing is known yet."""
+    p1, p2 = _pair(tmp_path)
+    (p1 / "a.txt").write_text("hello\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+
+    run = _dry_run(env, _job(session, p1, p2))
+
+    assert run.status == RunStatus.failed
+    assert "first sync" in run.summary["error"].lower()
+
+
+def test_the_brake_is_reported_as_a_percentage_not_a_count(tmp_path: Path, env) -> None:
+    """--max-delete is a percentage for bisync and a count for sync. Reporting a
+    resolved count would name a threshold rclone does not enforce, on the one
+    direction that can damage both copies."""
+    p1, p2 = _pair(tmp_path)
+    (p1 / "a.txt").write_text("hello\n", encoding="utf-8")
+    _settings, _box, _factory, session = env
+    job = _job(session, p1, p2, max_delete_pct=25)
+    assert _run(env, job, resync=True).status == RunStatus.success
+
+    run = _dry_run(env, job)
+
+    assert run.summary["bidirectional"] is True
+    assert run.summary["max_delete_threshold"] == 25
