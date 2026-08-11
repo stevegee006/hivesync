@@ -1,6 +1,6 @@
 [project]
 name = "hivesync"
-version = "0.2.5"
+version = "0.2.6"
 description = "Dockerized file sync orchestrator that drives rclone and lftp"
 license = "MIT"
 license-files = ["LICENSE"]

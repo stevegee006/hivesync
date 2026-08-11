@@ -8,7 +8,7 @@
 
 Scheduled and continuous sync &bull; Dry runs before anything moves &bull; Deletions archived, not deleted
 
-[![version](https://img.shields.io/badge/version-0.2.5-3fb950)](https://github.com/stevegee006/hivesync/releases)
+[![version](https://img.shields.io/badge/version-0.2.6-3fb950)](https://github.com/stevegee006/hivesync/releases)
 [![docker](https://img.shields.io/badge/docker-geaves006%2Fhivesync-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/geaves006/hivesync)
 [![platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-555)](https://hub.docker.com/r/geaves006/hivesync/tags)
 [![license](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
@@ -51,6 +51,15 @@ fixtures:
 - **Bidirectional sync** over rclone bisync, with an explicit first sync, conflict
   handling that never discards the losing version, and recovery when the workdir
   is lost.
+- **Restoring an archived deletion**, one click from the run that removed it.
+  A restore never overwrites: a file already at that path is left exactly as it
+  is, because recovering a deleted file must not become a way to lose a current
+  one.
+- **A history of every file** copied, deleted or archived, across all jobs and
+  runs, with size and the peak speed it moved at. Sortable and searchable.
+- **A quiet period**, so a file still being written by a download client is left
+  until it settles rather than copied half finished. Off by default, with a
+  filter preset for the temporary names download clients use.
 - **Deletion archiving**: deleted files move to an archive directory instead of
   disappearing, keeping their relative paths, under a per run timestamp.
 - **Notifications** to a webhook, Discord or ntfy, **`/metrics`** for Prometheus,
@@ -193,7 +202,7 @@ Three are published for every release:
 
 | Tag | Moves | Use it when |
 |---|---|---|
-| `0.2.5` | never | you want the container to run the same code until you decide otherwise |
+| `0.2.6` | never | you want the container to run the same code until you decide otherwise |
 | `0.2` | on patch releases within 0.2 | you want fixes without a feature change |
 | `latest` | on every release | you would rather be current than stable |
 
@@ -653,7 +662,7 @@ Then build and push multi-arch, amd64 and arm64:
 make push
 ```
 
-This publishes `geaves006/hivesync:0.2.5` and `:latest`. Override the namespace
+This publishes `geaves006/hivesync:0.2.6` and `:latest`. Override the namespace
 with `make push DOCKERHUB_NAMESPACE=other`.
 
 A first push creates the Docker Hub repository as **public** by default. Create it
@@ -683,7 +692,7 @@ Read and Write scope.
 Then publishing is a tag:
 
 ```bash
-git tag v0.2.5 && git push origin v0.2.5
+git tag v0.2.6 && git push origin v0.2.6
 ```
 
 The workflow runs on every push to `main` and every pull request as well, but
