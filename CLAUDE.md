@@ -651,10 +651,18 @@ Acceptance criteria, all four met, `tests/test_archive_integration.py`:
    create, update, delete into the archive, rename, and a unicode filename, then a
    further run proving nothing is archived twice.
 
-**Criterion 4 does not cover a file larger than 5 GB.** The spec asks for one. It
-needs tens of gigabytes of disk and minutes of transfer per run, so it stays a
-manual check against real hardware. Nothing in this suite is evidence about
-multi-gigabyte files.
+**Criterion 4's file larger than 5 GB is not covered by the suite, and was
+checked by hand instead.** It needs tens of gigabytes of disk and minutes of
+transfer per run, so it stays a manual check against real hardware. Done on
+2026-08-11 at v0.2.6, UltraCC to Synology over SMB: a single 9.3 GB file, run
+#149, reported as 1 updated and 9.3 GB transferred with 30 unchanged and no
+errors.
+
+That size matters for a reason beyond the size. It is well past rclone's
+multi-thread cutoff, so the run logged `Multi-thread Copied` rather than
+`Copied`, which is the exact wording that used to be recorded as zero files and
+zero bytes: see the transfer message gotcha above. The counts and the byte total
+were both right, so the fix holds at a size no test here reaches.
 
 Also true, and verified rather than assumed: archived deletions still count
 against `--max-delete`. With a brake of two and ten files to remove, rclone
