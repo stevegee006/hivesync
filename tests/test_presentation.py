@@ -1075,3 +1075,97 @@ def test_forcing_a_run_with_nothing_to_approve_does_nothing(
 
     page = authed_client.get(f"/runs/{run_id}").text
     assert "/force" not in page
+
+
+# --------------------------------------------------------------------------
+# Restoring archived deletions from the run page
+# --------------------------------------------------------------------------
+
+
+def _archived_run(settings, *, archived: int = 1, dirs: dict | None = None) -> int:
+    from app.models import ArchiveLayout, DeleteMode, JobRun, RunMode, RunStatus, RunTrigger
+
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="ArcSrc", type=ConnectionType.local, base_path="/s")
+    dest = Connection(name="ArcDst", type=ConnectionType.local, base_path="/d")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(
+        name="Archiver",
+        source_connection_id=source.id,
+        dest_connection_id=dest.id,
+        filters={},
+        delete_mode=DeleteMode.archive,
+        archive_layout=ArchiveLayout.timestamped_dir,
+    )
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id,
+        trigger=RunTrigger.manual,
+        mode=RunMode.live,
+        status=RunStatus.success,
+        files_archived=archived,
+        archive_dirs=dirs if dirs is not None else {"dest": "/d.hivesync-archive/archiver/x"},
+        summary={"archived": archived},
+    )
+    session.add(run)
+    session.commit()
+    return run.id
+
+
+def test_a_run_that_predates_recording_explains_itself(authed_client: TestClient, settings) -> None:
+    """Rather than offering a restore it cannot target precisely."""
+    run_id = _archived_run(settings, dirs={})
+
+    page = authed_client.get(f"/runs/{run_id}").text
+
+    assert "predates" in page
+    assert f'action="/runs/{run_id}/restore"' not in page
+
+
+def test_the_suffix_layout_declines_rather_than_guessing(
+    authed_client: TestClient, settings
+) -> None:
+    """Reversing it means reading a filename to infer where a file came from.
+    Retention refuses that layout for the same reason."""
+    from app.models import ArchiveLayout, JobRun
+    from app.models import Job as JobModel
+
+    run_id = _archived_run(settings)
+    with sessionmaker(bind=create_db_engine(settings))() as session:
+        run = session.get(JobRun, run_id)
+        job = session.get(JobModel, run.job_id)
+        job.archive_layout = ArchiveLayout.suffix
+        session.commit()
+
+    page = authed_client.get(f"/runs/{run_id}").text
+
+    assert "suffix layout" in page
+    assert f'action="/runs/{run_id}/restore"' not in page
+
+
+def test_a_restore_only_touches_files_that_are_really_in_the_archive() -> None:
+    """A path arriving in a form must not become an arbitrary write into the
+    destination. The submitted keys are matched against the listing rather than
+    used to build a path."""
+    web = Path("app/web/__init__.py").read_text(encoding="utf-8")
+
+    handler = web[
+        web.index("async def restore_run_form") : web.index(
+            "@router.post", web.index("async def restore_run_form")
+        )
+    ]
+    assert "item.key in set(wanted)" in handler
+    assert "restore.list_archived" in handler
+
+
+def test_the_restore_never_overwrites_and_says_so() -> None:
+    """The property the feature rests on, stated where someone reads it and
+    enforced where it matters."""
+    module = Path("app/jobs/restore.py").read_text(encoding="utf-8")
+    template = (TEMPLATE_DIR / "runs" / "detail.html").read_text(encoding="utf-8")
+
+    assert '"--ignore-existing"' in module
+    assert "never overwrites" in module
+    assert "never replaced" in template

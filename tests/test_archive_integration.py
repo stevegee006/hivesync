@@ -22,7 +22,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.crypto import SecretBox
 from app.db import create_db_engine
-from app.jobs import planner
+from app.jobs import planner, restore
 from app.jobs.runner import LiveRunner
 from app.models import (
     ArchiveLayout,
@@ -291,3 +291,109 @@ def test_smb_archive_checklist(tmp_path: Path, env) -> None:
         "a second run archived something again, so the archive is being synced: "
         f"{before} then {again.summary}"
     )
+
+
+# --------------------------------------------------------------------------
+# Restoring an archived deletion
+#
+# SPEC open question 3, answered: the folder on disk was not enough, because
+# nothing recorded where a run archived to.
+# --------------------------------------------------------------------------
+
+
+def _restorable(env, tmp_path: Path) -> tuple[Job, JobRun, Path, Path]:
+    """A job that archived one deletion, and the run that did it."""
+    _settings, _box, _factory, session = env
+    src = tmp_path / "rsrc"
+    dst = tmp_path / "rdst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "kept.txt").write_text("still here\n", encoding="utf-8")
+    (dst / "kept.txt").write_text("still here\n", encoding="utf-8")
+    (dst / "removed.txt").write_text("the original\n", encoding="utf-8")
+    job = _local_job(session, src, dst)
+
+    run = _run(env, job)
+    assert run.status == RunStatus.success, run.summary
+    assert not (dst / "removed.txt").exists(), "the run should have archived it"
+    return job, run, src, dst
+
+
+def test_a_run_records_where_it_archived(tmp_path: Path, env) -> None:
+    """The directory carries the run stamp, computed when the run starts, so it
+    cannot be derived afterwards. It was only ever a status line."""
+    _settings, _box, _factory, session = env
+    job, run, src, dst = _restorable(env, tmp_path)
+    assert job is not None and src.exists() and dst.exists()
+
+    session.refresh(run)
+    assert run.archive_dirs, "the run recorded no archive directory"
+    assert "dest" in run.archive_dirs
+    # Stored without the synthetic alias, which belongs to a finished process.
+    assert "hs_dst" not in run.archive_dirs["dest"]
+
+
+def test_an_archived_file_can_be_listed_and_restored(tmp_path: Path, env) -> None:
+    settings, box, _factory, _session = env
+    job, run, src, dst = _restorable(env, tmp_path)
+    assert src.exists()
+
+    listed = restore.list_archived(job, run, box=box, settings=settings)
+    assert [item.path for item in listed] == ["removed.txt"]
+
+    report = restore.restore(job, run, listed, box=box, settings=settings)
+
+    assert report.ok, report.errors
+    assert report.restored == ["removed.txt"]
+    assert (dst / "removed.txt").read_text(encoding="utf-8") == "the original\n"
+
+
+def test_restoring_never_overwrites_what_is_there_now(tmp_path: Path, env) -> None:
+    """The property the whole feature rests on. Recovering a deleted file must
+    not be a way to lose a current one."""
+    settings, box, _factory, _session = env
+    job, run, src, dst = _restorable(env, tmp_path)
+    assert src.exists()
+
+    # Something new arrives at the same path before anyone restores.
+    (dst / "removed.txt").write_text("A NEWER FILE\n", encoding="utf-8")
+
+    listed = restore.list_archived(job, run, box=box, settings=settings)
+    report = restore.restore(job, run, listed, box=box, settings=settings)
+
+    assert report.ok, report.errors
+    assert report.restored == []
+    assert report.skipped == ["removed.txt"]
+    assert (dst / "removed.txt").read_text(encoding="utf-8") == "A NEWER FILE\n"
+
+
+def test_the_archive_is_left_intact_by_a_restore(tmp_path: Path, env) -> None:
+    """Copied out of, never moved out of, so the same file can be restored
+    again and a mistake cannot destroy the last copy."""
+    settings, box, _factory, _session = env
+    job, run, src, dst = _restorable(env, tmp_path)
+    assert src.exists()
+
+    listed = restore.list_archived(job, run, box=box, settings=settings)
+    restore.restore(job, run, listed, box=box, settings=settings)
+    (dst / "removed.txt").unlink()
+
+    again = restore.list_archived(job, run, box=box, settings=settings)
+    assert [item.path for item in again] == ["removed.txt"]
+    assert restore.restore(job, run, again, box=box, settings=settings).restored == ["removed.txt"]
+
+
+def test_a_run_that_predates_recording_says_so(tmp_path: Path, env) -> None:
+    """Rather than offering a restore it cannot target precisely."""
+    settings, box, _factory, session = env
+    job, run, src, dst = _restorable(env, tmp_path)
+    assert src.exists() and dst.exists()
+    run.archive_dirs = None
+    session.commit()
+
+    reason = restore.why_not(job, run)
+
+    assert reason is not None
+    assert "predates" in reason
+    with pytest.raises(restore.RestoreError):
+        restore.list_archived(job, run, box=box, settings=settings)

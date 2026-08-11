@@ -259,6 +259,99 @@ This approves that number and no more. If anything else has been removed since t
   {% endfor %}
 </dl>
 
+{# Archived deletions, and getting them back. SPEC open question 3, answered.
+
+   Listed from the archive rather than from this run's change rows: the rows say
+   what the run archived, the directory says what is still there, and retention
+   may have removed some of it in between. #}
+{% if restore_error %}
+<div class="mt-6 rounded-lg border border-red-800 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+  {{ restore_error }}
+</div>
+{% endif %}
+
+{% if restore_report %}
+<div class="mt-6 rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 shadow-sm shadow-black/40">
+  <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Restore</h2>
+  <p class="mt-2 text-sm text-slate-300">
+    {{ restore_report.restored | length }} restored,
+    {{ restore_report.skipped | length }} left alone.
+  </p>
+  {% if restore_report.skipped %}
+  <p class="mt-1 text-xs text-slate-500">
+    A file already at its old location is never replaced: recovering a deleted
+    file must not be a way to lose a current one. Move or rename what is there
+    now if you want the archived copy back.
+  </p>
+  <ul class="mt-2 space-y-0.5">
+    {% for path in restore_report.skipped[:20] %}
+    <li class="font-mono text-xs text-slate-500">{{ path }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% for problem in restore_report.errors[:10] %}
+  <p class="mt-1 font-mono text-xs text-red-300">{{ problem }}</p>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if restore_blocked %}
+<div class="mt-6 rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 shadow-sm shadow-black/40">
+  <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Archived files</h2>
+  <p class="mt-2 max-w-2xl text-xs text-slate-500">{{ restore_blocked }}</p>
+</div>
+{% elif archived_files %}
+<form method="post" action="/runs/{{ run.id }}/restore"
+      class="mt-6 rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 shadow-sm shadow-black/40">
+  {{ csrf_input() }}
+  <div class="flex flex-wrap items-baseline justify-between gap-2">
+    <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+      Archived by this run
+    </h2>
+    <span class="text-xs text-slate-500">{{ archived_files | length }} in the archive</span>
+  </div>
+  <p class="mt-2 max-w-2xl text-xs text-slate-500">
+    These were removed from the sync and kept. Restoring copies one back to
+    where it was. A file already at that location is left exactly as it is, so
+    this can recover a deletion but never overwrite what is there now.
+  </p>
+
+  <ul class="mt-3 space-y-1">
+    {% for item in archived_files[:200] %}
+    <li class="flex items-baseline gap-2">
+      <input type="checkbox" name="path" value="{{ item.key }}" id="restore-{{ loop.index }}"
+             class="mt-1 shrink-0">
+      <label for="restore-{{ loop.index }}" class="min-w-0 break-all font-mono text-xs text-slate-300">
+        {{ item.path }}
+        <span class="text-slate-600">&mdash;
+          {{ dest_label if item.side.value == 'dest' else source_label }}</span>
+      </label>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if archived_files | length > 200 %}
+  <p class="mt-2 text-xs text-slate-500">
+    Showing the first 200. Restore everything to bring back the rest.
+  </p>
+  {% endif %}
+
+  <div class="mt-3 flex flex-wrap items-center gap-2">
+    <button type="submit"
+            class="rounded border border-slate-700 px-3 py-1.5 text-xs hover:bg-slate-800">
+      Restore selected
+    </button>
+    <button type="submit" name="all" value="true"
+            onsubmit="return true;"
+            class="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800"
+            onclick="return confirm('Restore all {{ archived_files | length }} archived files to their old locations?
+
+Anything already at one of those paths is left alone.');">
+      Restore everything
+    </button>
+  </div>
+</form>
+{% endif %}
+
 <p class="mt-3 text-xs text-slate-500">
   {# Tense matters here: a live run has already done it. #}
   {{ summary.get('bytes', 0) | filesize }}

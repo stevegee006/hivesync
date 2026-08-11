@@ -86,6 +86,17 @@ class ArchivePlan:
     inside_destination: bool
 
 
+def strip_remote(spec: str) -> str:
+    """The path half of `remote:path`, for storing on a run.
+
+    A run's `hs_src`/`hs_dst` aliases live for the length of one process, so a
+    stored spec would name a remote that no longer exists. The path is the part
+    worth keeping; the alias is reattached from the endpoints of whichever run
+    reads it back.
+    """
+    return _split_remote(spec)[1]
+
+
 def default_base(destination: str) -> str:
     """Where an archive goes when the operator has not chosen.
 

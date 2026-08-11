@@ -278,6 +278,17 @@ class JobRun(Base):
     # pre-flight refuses again rather than acting on an approval that was given
     # for something smaller.
     forced_max_delete: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Where this run archived its deletions, so they can be restored later.
+    # Keyed by the side the files were removed from: {"dest": "path"} for a one
+    # way job, both sides for a bidirectional one.
+    #
+    # Stored without the remote prefix. A run addresses its endpoints through
+    # synthetic `hs_src`/`hs_dst` aliases that exist for the length of that
+    # process, so a stored spec would name a remote that no longer exists. The
+    # alias is reattached from the current run's endpoints when restoring.
+    #
+    # NULL for runs that predate this, and for runs that archived nothing.
+    archive_dirs: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
     mode: Mapped[RunMode] = mapped_column(str_enum(RunMode, length=16), nullable=False)
     status: Mapped[RunStatus] = mapped_column(
         str_enum(RunStatus, length=16), nullable=False, default=RunStatus.queued

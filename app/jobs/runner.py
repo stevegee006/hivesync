@@ -220,9 +220,16 @@ class LiveRunner:
             archive_flags = []
             if job.delete_mode == DeleteMode.archive:
                 # SPEC 7.2: each side archives locally. Never across remotes.
-                archive_flags = archive.bisync_args(
-                    archive.plan_for(job, path1), archive.plan_for(job, path2)
-                )
+                plan1 = archive.plan_for(job, path1)
+                plan2 = archive.plan_for(job, path2)
+                archive_flags = archive.bisync_args(plan1, plan2)
+                # Two directories, because each side archives locally. Keyed by
+                # the side the files were removed from, matching JobRunChange.
+                run.archive_dirs = {
+                    ChangeSide.source.value: archive.strip_remote(plan1.backup_dir),
+                    ChangeSide.dest.value: archive.strip_remote(plan2.backup_dir),
+                }
+                session.commit()
 
             argv = bisync.build_bisync_command(
                 job,
@@ -355,6 +362,12 @@ class LiveRunner:
                 # the path, so it cannot be computed once at save time.
                 plan_archive = archive.plan_for(job, destination)
                 archive_flags = archive.sync_args(plan_archive)
+                # Recorded before the run, not after: if it is cancelled or
+                # fails partway, whatever it archived is still findable.
+                run.archive_dirs = {
+                    ChangeSide.dest.value: archive.strip_remote(plan_archive.backup_dir)
+                }
+                session.commit()
                 _emit(
                     run.id,
                     "status",

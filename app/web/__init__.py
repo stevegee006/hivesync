@@ -44,7 +44,7 @@ from app.crypto import SecretBox
 from app.db import get_session
 from app.engines import inspect, rclone, rcloneconf
 from app.engines.rcloneconf import RemoteConfigError
-from app.jobs import archive, cron, planner, retention
+from app.jobs import archive, cron, planner, restore, retention
 from app.models import (
     ArchiveLayout,
     CompareMode,
@@ -1099,6 +1099,50 @@ def resync_job_form(job_id: int, request: Request, session: Session = Depends(ge
     return RedirectResponse(url=f"/runs/{run.id}", status_code=303)
 
 
+@router.post("/runs/{run_id}/restore", response_class=HTMLResponse)
+async def restore_run_form(
+    run_id: int, request: Request, session: Session = Depends(get_session)
+) -> Any:
+    """Put archived deletions back where they came from.
+
+    Never overwrites: rclone is given --ignore-existing, so a file that exists
+    at the target now is left alone and reported as skipped. Recovering a
+    deleted file must not be a way to lose a current one.
+    """
+    security.require_user(request, session)
+    run = session.get(JobRun, run_id)
+    if run is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+    job = session.get(Job, run.job_id)
+    if job is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+
+    form = await request.form()
+    wanted = [str(value) for value in form.getlist("path")]
+
+    try:
+        available = restore.list_archived(
+            job, run, box=_box(request), settings=request.app.state.settings
+        )
+        chosen = (
+            available
+            if form.get("all") == "true"
+            # Matched against what is actually in the archive rather than
+            # trusting the form: a path from a request must not become an
+            # arbitrary write into the destination.
+            else [item for item in available if item.key in set(wanted)]
+        )
+        report = restore.restore(
+            job, run, chosen, box=_box(request), settings=request.app.state.settings
+        )
+    except (restore.RestoreError, RemoteConfigError) as exc:
+        context = _run_context(request, session, run, job, restore_error=str(exc))
+        return templates.TemplateResponse(request, "runs/detail.html", context)
+
+    context = _run_context(request, session, run, job, report=report)
+    return templates.TemplateResponse(request, "runs/detail.html", context)
+
+
 @router.post("/runs/{run_id}/force", response_class=HTMLResponse)
 def force_run_form(run_id: int, request: Request, session: Session = Depends(get_session)) -> Any:
     """Re-run a refused job, approving the deletions the check found.
@@ -1148,19 +1192,25 @@ def cancel_run_form(run_id: int, request: Request, session: Session = Depends(ge
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 
-@router.get("/runs/{run_id}", response_class=HTMLResponse)
-def run_detail_page(
-    run_id: int,
+def _run_context(
     request: Request,
+    session: Session,
+    run: JobRun,
+    job: Job | None,
+    *,
     action: str | None = None,
-    session: Session = Depends(get_session),
-) -> Any:
-    context = _page_context(request, session)
-    run = session.get(JobRun, run_id)
-    if run is None:
-        return RedirectResponse(url="/jobs", status_code=303)
+    report: Any = None,
+    restore_error: str | None = None,
+) -> dict[str, Any]:
+    """Everything the run page renders.
 
-    query = select(JobRunChange).where(JobRunChange.run_id == run_id)
+    Shared by the page itself and by the actions that post to it, so a restore
+    reports its outcome on the same screen rather than bouncing through a
+    redirect that would lose it.
+    """
+    context = _page_context(request, session)
+
+    query = select(JobRunChange).where(JobRunChange.run_id == run.id)
     if action:
         query = query.where(JobRunChange.action == action)
     changes = list(
@@ -1176,12 +1226,11 @@ def run_detail_page(
         str(name): total
         for name, total in session.execute(
             select(JobRunChange.action, func.count())
-            .where(JobRunChange.run_id == run_id)
+            .where(JobRunChange.run_id == run.id)
             .group_by(JobRunChange.action)
         )
     }
 
-    job = session.get(Job, run.job_id)
     context["run"] = run
     context["job"] = job
     # Endpoint labels for the Flow column. The connection name alone is not
@@ -1196,6 +1245,37 @@ def run_detail_page(
     context["change_counts"] = counts
     context["total_changes"] = sum(counts.values())
     context["active_action"] = action or ""
+
+    # The archive, listed rather than read from the change rows: retention or a
+    # person may have removed some of it since, and offering a restore for a
+    # file that is gone fails at the moment someone needs it to work.
+    context["restore_report"] = report
+    context["restore_error"] = restore_error
+    context["archived_files"] = []
+    context["restore_blocked"] = None
+    if job is not None and run.files_archived:
+        blocked = restore.why_not(job, run)
+        context["restore_blocked"] = blocked
+        if blocked is None and report is None:
+            with suppress(Exception):
+                context["archived_files"] = restore.list_archived(
+                    job, run, box=_box(request), settings=request.app.state.settings
+                )
+    return context
+
+
+@router.get("/runs/{run_id}", response_class=HTMLResponse)
+def run_detail_page(
+    run_id: int,
+    request: Request,
+    action: str | None = None,
+    session: Session = Depends(get_session),
+) -> Any:
+    run = session.get(JobRun, run_id)
+    if run is None:
+        return RedirectResponse(url="/jobs", status_code=303)
+    job = session.get(Job, run.job_id)
+    context = _run_context(request, session, run, job, action=action)
     return templates.TemplateResponse(request, "runs/detail.html", context)
 
 

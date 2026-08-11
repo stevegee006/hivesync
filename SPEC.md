@@ -693,7 +693,7 @@ written expression untouched.
 
 1. **Answered: dropped.** lftp's segmented transfers were never needed at these volumes. The engine was carried as an option from M0 and never built, and it is now removed entirely: the `Engine` enum, the option, the binary, and with it a GPL-3 program redistributed in the image. A second deletion path nobody had established a need for was never going to be free to build or to test.
 2. Is the cloud server reachable inbound from the local server, or must the container live on the cloud side and push?
-3. **Still open.** Should archived deletions be tracked in the DB as restorable entries with one-click restore, or is the archive folder on disk sufficient? Retention pruning exists and is off by default, so nothing is lost while this is undecided.
+3. **Answered: restorable.** The folder on disk was not sufficient, because nothing recorded *where* a run archived to: the directory carries the run's timestamp, computed as the run starts, so it could not be derived afterwards. Runs now record it, and the run page lists what is in the archive and restores it. Two properties make that safe: a restore never overwrites a file that exists at the target now, and the archive is copied out of rather than moved out of, so the same file can be restored twice and a mistake cannot destroy the last copy. The flat suffix layout is not restorable and says so: reversing it means reading a filename to guess where a file came from.
 4. Single admin behind authentik, or real multi-user?
 
 Do not block M0 or M1 on these. Question 1 gates M7. Question 3 would extend M6.
