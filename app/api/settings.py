@@ -40,6 +40,8 @@ class SettingsRead(BaseModel):
     log_max_total_mb: int
     display_timezone: str
     clock: Clock
+    # 0 means the environment's value is in force.
+    max_concurrent_runs_override: int
     # The zone in force once the empty "follow the environment" case is
     # resolved, so a caller does not have to know the rule to display it.
     effective_timezone: str
@@ -68,6 +70,7 @@ class SettingsUpdate(BaseModel):
     # not skipped when blank.
     display_timezone: str | None = None
     clock: Clock | None = None
+    max_concurrent_runs: int | None = Field(default=None, ge=0, le=32)
 
 
 def to_read(
@@ -90,9 +93,10 @@ def to_read(
         log_max_total_mb=preferences.log_max_total_mb,
         display_timezone=preferences.display_timezone,
         clock=preferences.clock,
+        max_concurrent_runs_override=preferences.max_concurrent_runs,
         effective_timezone=preferences.display_timezone or environment_timezone,
         auth_mode=auth_mode,
-        max_concurrent_runs=max_concurrent_runs,
+        max_concurrent_runs=preferences.max_concurrent_runs or max_concurrent_runs,
     )
 
 

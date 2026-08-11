@@ -127,6 +127,35 @@
   </section>
 
   <section class="border-t border-slate-800 pt-6">
+    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Runs</h2>
+    <div class="mt-3 grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div>
+        <label for="max_concurrent_runs" class="block text-sm text-slate-400">
+          Run at most
+        </label>
+        <div class="mt-1 flex flex-wrap items-center gap-2">
+          <input id="max_concurrent_runs" name="max_concurrent_runs" type="number"
+                 min="0" max="32" value="{{ preferences.max_concurrent_runs or '' }}"
+                 placeholder="{{ environment_concurrent_runs }}"
+                 class="w-24 rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          <span class="text-sm text-slate-400">jobs at the same time</span>
+        </div>
+        <p class="mt-1 max-w-2xl text-xs text-slate-500">
+          Leave empty to follow <span class="font-mono">HIVESYNC_MAX_CONCURRENT_RUNS</span>,
+          currently <span class="font-mono">{{ environment_concurrent_runs }}</span>.
+          A change takes effect immediately: runs already going finish as they
+          were, and the new limit applies to whatever starts next.
+        </p>
+        <p class="mt-1 max-w-2xl text-xs text-slate-500">
+          Higher is not always faster. Each run is a separate rclone process
+          listing both endpoints, so on one NAS they compete for the same disk
+          and the same network.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="border-t border-slate-800 pt-6">
     <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Presentation</h2>
     <p class="mt-1 text-xs text-slate-500">
       How times are shown. Everything is stored in UTC either way, so changing
@@ -327,17 +356,19 @@
   <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">
     Set at startup
   </h2>
-  <p class="mt-2 text-xs text-slate-500">
-    These come from the environment and need a restart to change.
+  <p class="mt-2 max-w-2xl text-xs text-slate-500">
+    These come from the environment and need a restart to change. Authentication
+    stays here on purpose: a control that could switch it off would mean anyone
+    who reached a signed-in browser could switch it off, and this is the setting
+    that decides who gets in at all.
   </p>
-  <dl class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+  <dl class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
     <div class="rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-3">
       <dt class="text-xs uppercase tracking-wide text-slate-500">Authentication</dt>
       <dd class="mt-1 font-mono text-sm text-slate-200">{{ auth_mode }}</dd>
-    </div>
-    <div class="rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-3">
-      <dt class="text-xs uppercase tracking-wide text-slate-500">Concurrent runs</dt>
-      <dd class="mt-1 font-mono text-sm text-slate-200">{{ max_concurrent_runs }}</dd>
+      <dd class="mt-1 text-xs text-slate-500">
+        <span class="font-mono">HIVESYNC_AUTH_MODE</span>
+      </dd>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900 shadow-sm shadow-black/40 px-4 py-3">
       <dt class="text-xs uppercase tracking-wide text-slate-500">Metrics</dt>

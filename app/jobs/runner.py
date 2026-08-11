@@ -108,9 +108,38 @@ class LiveRunner:
         self._session_factory = session_factory
         self._box = box
         self._settings = settings
-        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="hivesync-live")
+        self._thread_prefix = "hivesync-live"
+        self._max_workers = max_workers
+        self._pool = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix=self._thread_prefix
+        )
         self._lock = threading.Lock()
         self._active: dict[int, process.StreamingProcess] = {}
+
+    def resize(self, max_workers: int) -> None:
+        """Change how many runs may go at once, without waiting for a restart.
+
+        A ThreadPoolExecutor cannot be resized, so this swaps in a new one and
+        lets the old drain: futures already running finish on the old pool's
+        threads, and new work goes to the new one. `shutdown(wait=False)` is
+        deliberate, because waiting here would block the request that changed
+        the setting for as long as the longest sync.
+
+        The cost is that the limit can be briefly exceeded while the old pool
+        drains. That is a resource setting rather than a safety one: nothing is
+        made unsafe by three transfers running where two were asked for, and the
+        alternative is refusing to change it until everything is idle.
+        """
+        if max_workers < 1 or max_workers == self._max_workers:
+            return
+        with self._lock:
+            old = self._pool
+            self._pool = ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix=self._thread_prefix
+            )
+            self._max_workers = max_workers
+        old.shutdown(wait=False)
+        logger.info("Concurrency changed", extra={"max_workers": max_workers})
 
     def submit(self, run_id: int) -> None:
         self._pool.submit(self._guarded, run_id)

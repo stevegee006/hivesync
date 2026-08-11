@@ -385,3 +385,89 @@ def test_an_unknown_preference_row_is_ignored(settings: Settings) -> None:
 def test_redacted_hides_the_webhook_url() -> None:
     preferences = Preferences(notify_webhook_url=WEBHOOK)
     assert preferences.redacted()["notify_webhook_url"] == "***"
+
+
+# --------------------------------------------------------------------------
+# Concurrency, which used to be readable and not settable
+# --------------------------------------------------------------------------
+
+
+def test_concurrency_can_be_changed_from_the_screen(authed_client: TestClient, settings) -> None:
+    """It was shown under "set at startup" with no way to change it, so the only
+    route to a different value was editing the compose file and recreating the
+    container."""
+    page = authed_client.get("/settings").text
+    assert 'name="max_concurrent_runs"' in page
+
+    response = authed_client.post(
+        "/settings",
+        data={
+            "notify_target": "none",
+            "notify_ntfy_server": "https://ntfy.sh",
+            "notify_timeout_seconds": "10",
+            "run_history_keep": "200",
+            "log_retention_days": "90",
+            "log_max_total_mb": "512",
+            "display_timezone": "",
+            "clock": "24h",
+            "max_concurrent_runs": "6",
+        },
+    )
+
+    assert response.status_code == 200
+    with sessionmaker(bind=create_db_engine(settings))() as session:
+        assert preferences_store.load(session).max_concurrent_runs == 6
+
+
+def test_empty_means_follow_the_environment(authed_client: TestClient, settings) -> None:
+    """Rather than a second place the number can disagree with itself."""
+    response = authed_client.post(
+        "/settings",
+        data={
+            "notify_target": "none",
+            "notify_ntfy_server": "https://ntfy.sh",
+            "notify_timeout_seconds": "10",
+            "run_history_keep": "200",
+            "log_retention_days": "90",
+            "log_max_total_mb": "512",
+            "display_timezone": "",
+            "clock": "24h",
+            "max_concurrent_runs": "",
+        },
+    )
+
+    assert response.status_code == 200
+    with sessionmaker(bind=create_db_engine(settings))() as session:
+        assert preferences_store.load(session).max_concurrent_runs == 0
+
+
+def test_a_pool_can_be_resized_while_it_is_alive() -> None:
+    """A ThreadPoolExecutor cannot be resized, so this swaps one in and lets the
+    old drain. Work already submitted has to keep running."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.jobs.runner import LiveRunner
+
+    runner = LiveRunner.__new__(LiveRunner)
+    runner._thread_prefix = "test-pool"
+    runner._max_workers = 2
+    runner._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="test-pool")
+    runner._lock = __import__("threading").Lock()
+
+    done = runner._pool.submit(lambda: "before")
+    runner.resize(5)
+
+    assert done.result(timeout=5) == "before", "in-flight work was cancelled by the swap"
+    assert runner._max_workers == 5
+    assert runner._pool.submit(lambda: "after").result(timeout=5) == "after"
+    runner._pool.shutdown(wait=False)
+
+
+def test_authentication_stays_out_of_the_form(authed_client: TestClient) -> None:
+    """Deliberate. A control that could switch authentication off would mean
+    anyone reaching a signed-in browser could switch it off, and it is the
+    setting that decides who gets in at all."""
+    page = authed_client.get("/settings").text
+
+    assert 'name="auth_mode"' not in page
+    assert "HIVESYNC_AUTH_MODE" in page

@@ -1284,6 +1284,19 @@ def run_detail_page(
 # --------------------------------------------------------------------------
 
 
+def _apply_concurrency(request: Request, preferences: preferences_store.Preferences) -> None:
+    """Push the concurrency setting into the running pools.
+
+    Zero means follow the environment, which is where this lived before there
+    was a setting for it.
+    """
+    workers = preferences.max_concurrent_runs or request.app.state.settings.max_concurrent_runs
+    for runner in ("live_runner", "plan_runner"):
+        pool = getattr(request.app.state, runner, None)
+        if pool is not None:
+            pool.resize(workers)
+
+
 def _settings_context(
     request: Request,
     session: Session,
@@ -1303,6 +1316,7 @@ def _settings_context(
     context["max_concurrent_runs"] = settings.max_concurrent_runs
     context["metrics_token_set"] = bool(settings.metrics_token)
     context["environment_timezone"] = settings.timezone
+    context["environment_concurrent_runs"] = settings.max_concurrent_runs
     # A datalist rather than a select: a typed zone still validates server side,
     # and an empty list on a machine with no tz database degrades to a plain
     # text box instead of an empty dropdown with no way to enter anything.
@@ -1362,10 +1376,14 @@ async def save_settings_form(request: Request, session: Session = Depends(get_se
             # "leave alone", so this one is not coerced to None when blank.
             display_timezone=(form.get("display_timezone") or "").strip(),
             clock=cast("Clock", form.get("clock") or "24h"),
+            max_concurrent_runs=number("max_concurrent_runs") or 0,
         )
-        preferences_store.save(
-            session, apply_settings_update(preferences_store.load(session), update)
-        )
+        saved = apply_settings_update(preferences_store.load(session), update)
+        preferences_store.save(session, saved)
+        # Without a restart: the runners swap their pool. A setting that says it
+        # applies now and does not is worse than one that admits it needs a
+        # restart, which is what this one used to do from the environment.
+        _apply_concurrency(request, saved)
     except ValidationError as exc:
         context = _settings_context(request, session, error=_describe_validation_error(exc))
         return templates.TemplateResponse(request, "settings.html", context, status_code=400)

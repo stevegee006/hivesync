@@ -78,6 +78,11 @@ class Preferences(BaseModel):
     # operator sets and what the scheduler already logs at startup. A value here
     # overrides it for the UI without a restart, which is the point: TZ is baked
     # into the compose file and changing it means recreating the container.
+    # How many runs may go at once. Zero means "follow the environment", which
+    # is where this lived before and still is for a fresh install. Applied
+    # without a restart: the runners swap their thread pool.
+    max_concurrent_runs: int = Field(default=0, ge=0, le=32)
+
     display_timezone: str = ""
     clock: Clock = "24h"
 
