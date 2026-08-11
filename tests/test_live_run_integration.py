@@ -560,3 +560,39 @@ def test_a_deletion_records_no_speed(tmp_path: Path, env) -> None:
     rows = session.query(JobRunChange).filter_by(run_id=run.id).all()
     gone = next(row for row in rows if row.path == "gone.txt")
     assert gone.peak_speed_bps is None
+
+
+def test_a_new_file_is_labelled_new_and_an_overwrite_updated(tmp_path: Path, env) -> None:
+    """Against the real binary, because the label comes from rclone's wording.
+
+    Reported from production at 9.3 GB: a file that had never been on the
+    destination was listed as "updated", while the summary card above it said
+    New 1. The rows were derived from whether the pre-flight plan had mentioned
+    the path, and the plan mentions every change of every kind, so a correctly
+    predicted new file read as an update.
+
+    The integration suite did not catch it because the tests that query these
+    rows collected `c.path` and never looked at `c.action`.
+    """
+    from app.models import ChangeAction, JobRunChange
+
+    _settings, _box, _factory, session = env
+    src = tmp_path / "lsrc"
+    dst = tmp_path / "ldst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "fresh.txt").write_text("never seen before\n", encoding="utf-8")
+    (src / "existing.txt").write_text("the new contents, which are longer\n", encoding="utf-8")
+    (dst / "existing.txt").write_text("old\n", encoding="utf-8")
+
+    run = _run(env, _job(session, src, dst))
+
+    assert run.status == RunStatus.success, run.summary
+    rows = {
+        row.path: row.action for row in session.query(JobRunChange).filter_by(run_id=run.id).all()
+    }
+    assert rows["fresh.txt"] == ChangeAction.new
+    assert rows["existing.txt"] == ChangeAction.updated
+    # And the cards agree with the table, which is the property that broke.
+    assert run.summary["new"] == 1, run.summary
+    assert run.summary["updated"] == 1, run.summary

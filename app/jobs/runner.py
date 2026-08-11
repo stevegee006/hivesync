@@ -632,15 +632,25 @@ def _record(
     # --backup-dir, because where a file goes does not change whether it goes.
     deleted = observed.removals
 
-    planned_paths = {change.path for change in plan.changes}
     actions = {
         parsers.SKIPPED_DELETE: ChangeAction.deleted,
         parsers.SKIPPED_ARCHIVE: ChangeAction.archived,
     }
     for op in (copied + deleted)[:MAX_PERSISTED_CHANGES]:
+        # New or updated comes from rclone's own copy wording, "Copied (new)"
+        # against "Copied (replaced existing)", which is the same source the
+        # summary cards above read through observed.created.
+        #
+        # It used to be derived from whether the plan had predicted the path,
+        # which is not that question. plan.changes holds every planned change of
+        # any category, so "the plan saw this file" was read as "this file was an
+        # update", and every correctly predicted new file was recorded as
+        # updated. The only rows that could come out new were files that
+        # appeared after planning, which is backwards. The cards and the table
+        # then disagreed on one screen: New 1 above a row reading updated.
         action = actions.get(
             op.operation,
-            ChangeAction.new if op.path not in planned_paths else ChangeAction.updated,
+            ChangeAction.updated if op.replaced else ChangeAction.new,
         )
         session.add(
             JobRunChange(

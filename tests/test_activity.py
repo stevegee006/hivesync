@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections import Counter
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
@@ -18,11 +20,13 @@ from app.db import create_db_engine
 from app.engines import parsers
 from app.jobs.events import ActivityRecorder, RunBroker, RunEvent
 from app.models import (
+    ChangeAction,
     Connection,
     ConnectionType,
     Direction,
     Job,
     JobRun,
+    JobRunChange,
     RunMode,
     RunStatus,
     RunTrigger,
@@ -641,3 +645,113 @@ def test_a_dry_run_copy_claims_neither() -> None:
     log = p.DryRunLog(operations=[operation])
     assert log.created == []
     assert log.replacements == []
+
+
+# --------------------------------------------------------------------------
+# The change table and the summary cards, which must agree
+# --------------------------------------------------------------------------
+
+
+def _recorded(settings, *lines: str, planned: list[str]) -> tuple[dict, dict[str, str]]:
+    """Record a finished one way run and return its summary and its change rows.
+
+    `planned` is what the pre-flight predicted, by path. It exists to prove the
+    plan does not decide the label.
+    """
+    from conftest import create_schema
+
+    from app.engines.base import Plan, PlannedChange
+    from app.jobs.runner import _record
+
+    create_schema(settings)
+    session = sessionmaker(bind=create_db_engine(settings))()
+    source = Connection(name="UltraCC", type=ConnectionType.local, base_path="/src")
+    dest = Connection(name="Synology", type=ConnectionType.local, base_path="/dst")
+    session.add_all([source, dest])
+    session.commit()
+    job = Job(
+        name="Movies",
+        source_connection_id=source.id,
+        dest_connection_id=dest.id,
+        filters={},
+    )
+    session.add(job)
+    session.commit()
+    run = JobRun(
+        job_id=job.id,
+        trigger=RunTrigger.manual,
+        mode=RunMode.live,
+        status=RunStatus.running,
+    )
+    session.add(run)
+    session.commit()
+
+    plan = Plan(
+        changes=[PlannedChange(action=ChangeAction.new, path=p) for p in planned],
+        unchanged_count=30,
+    )
+    _record(
+        session=session,
+        run=run,
+        job=job,
+        plan=plan,
+        observed=_absorbed(*lines),
+        exit_code=0,
+        threshold=6,
+        log_path=Path("/config/logs/x.log"),
+    )
+    session.commit()
+    rows = {c.path: c.action.value for c in session.query(JobRunChange).all()}
+    return dict(run.summary), rows
+
+
+def test_a_new_file_the_plan_predicted_is_recorded_as_new(settings) -> None:
+    """The reported bug, at the size it was found.
+
+    A 9.3 GB file that had never been on the destination was listed as
+    "updated". The label came from whether the plan had mentioned the path, and
+    `plan.changes` holds every planned change of any kind, so a correctly
+    predicted new file read as an update. Only a file that appeared after
+    planning could come out new, which is backwards.
+    """
+    summary, rows = _recorded(
+        settings,
+        COPY_LINES["multithread"],
+        planned=["big.mkv"],
+    )
+
+    assert rows == {"big.mkv": "new"}
+    assert summary["new"] == 1
+    assert summary["updated"] == 0
+
+
+def test_the_change_rows_agree_with_the_summary_cards(settings) -> None:
+    """One run, two writers, one screen.
+
+    The cards counted through `observed.created`, from rclone's copy wording,
+    while the rows were derived from the plan. They disagreed in front of the
+    reader: New 1 above a table whose only row said updated. Anything that can
+    label a change has to answer from the same source.
+    """
+    summary, rows = _recorded(
+        settings,
+        COPY_LINES["new"],
+        COPY_LINES["replaced"],
+        COPY_LINES["multithread"],
+        # Everything was predicted, which is the normal case and the one that
+        # used to make every row say updated.
+        planned=["a.txt", "b.txt", "big.mkv"],
+    )
+
+    by_action = Counter(rows.values())
+    assert by_action["new"] == summary["new"] == 2
+    assert by_action["updated"] == summary["updated"] == 1
+
+
+def test_a_file_that_appeared_after_planning_is_still_labelled_by_rclone(settings) -> None:
+    """The old rule called an unplanned path new. rclone says it replaced
+    something that was already there, and rclone is the one that looked."""
+    summary, rows = _recorded(settings, COPY_LINES["replaced"], planned=[])
+
+    assert rows == {"b.txt": "updated"}
+    assert summary["updated"] == 1
