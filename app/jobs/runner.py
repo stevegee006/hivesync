@@ -503,6 +503,12 @@ def _absorb(observed: parsers.DryRunLog, line: str, run_id: int) -> bool:
     if isinstance(stats, dict):
         parsed = parsers.parse_stats(stats)
         observed.stats = stats
+        # The only chance to see a per-file speed: it is reported while the file
+        # is in flight and never again once it has finished.
+        for progress in parsed.transferring:
+            if progress.name and progress.speed > 0:
+                previous = observed.peak_speeds.get(progress.name, 0.0)
+                observed.peak_speeds[progress.name] = max(previous, progress.speed)
         activity.record(run_id, parsed)
         broker.publish(
             run_id,
@@ -637,7 +643,14 @@ def _record(
             ChangeAction.new if op.path not in planned_paths else ChangeAction.updated,
         )
         session.add(
-            JobRunChange(run_id=run.id, action=action, side=side, path=op.path, size=op.size)
+            JobRunChange(
+                run_id=run.id,
+                action=action,
+                side=side,
+                path=op.path,
+                size=op.size,
+                peak_speed_bps=observed.peak_speeds.get(op.path),
+            )
         )
 
     cancelled = run.status == RunStatus.cancelled or exit_code in (-15, 143, -9, 137)
@@ -785,6 +798,7 @@ def _record_bisync(
                 side=sides.get(op.path, default_side),
                 path=op.path,
                 size=op.size,
+                peak_speed_bps=observed.peak_speeds.get(op.path),
             )
         )
 

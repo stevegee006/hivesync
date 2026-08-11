@@ -511,3 +511,52 @@ def test_a_dry_run_and_a_live_run_see_the_same_files(tmp_path: Path, env) -> Non
     assert preview is not None
     assert preview.status == RunStatus.success, preview.summary
     assert preview.summary["new"] == 0, "the preview offered to copy a file the run would skip"
+
+
+def test_a_transferred_file_records_how_fast_it_moved(tmp_path: Path, env) -> None:
+    """Per-file speed appears only in the `transferring` array of the stats
+    events, while the file is in flight, and was thrown away when the run ended.
+
+    The transfer has to outlive a stats tick, and the interval is 5 seconds, so
+    a 64MB local copy is measured at exactly nothing: it starts and finishes
+    between two ticks and never appears in `transferring` at all. Throttled here
+    so it spans one, which is also why this is an integration test.
+    """
+    from app.models import JobRunChange
+
+    _settings, _box, _factory, session = env
+    src = tmp_path / "psrc"
+    dst = tmp_path / "pdst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "big.bin").write_bytes(os.urandom(48 * 1024 * 1024))
+
+    run = _run(env, _job(session, src, dst, bwlimit="4M"))
+
+    assert run.status == RunStatus.success, run.summary
+    rows = session.query(JobRunChange).filter_by(run_id=run.id).all()
+    big = next(row for row in rows if row.path == "big.bin")
+    assert big.peak_speed_bps is not None, "no per-file speed was recorded"
+    assert big.peak_speed_bps > 0
+
+
+def test_a_deletion_records_no_speed(tmp_path: Path, env) -> None:
+    """Nothing was transferred, so there is nothing to measure. NULL rather than
+    zero, which would claim a measurement that was never taken."""
+    from app.models import JobRunChange
+
+    _settings, _box, _factory, session = env
+    src = tmp_path / "dsrc"
+    dst = tmp_path / "ddst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "keep.txt").write_text("kept\n", encoding="utf-8")
+    (dst / "keep.txt").write_text("kept\n", encoding="utf-8")
+    (dst / "gone.txt").write_text("removed\n", encoding="utf-8")
+
+    run = _run(env, _job(session, src, dst))
+
+    assert run.status == RunStatus.success, run.summary
+    rows = session.query(JobRunChange).filter_by(run_id=run.id).all()
+    gone = next(row for row in rows if row.path == "gone.txt")
+    assert gone.peak_speed_bps is None

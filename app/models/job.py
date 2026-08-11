@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -332,6 +333,10 @@ class JobRunChange(Base):
     side: Mapped[ChangeSide] = mapped_column(str_enum(ChangeSide, length=16), nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)
     size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # The fastest this file was seen moving, in bytes per second. NULL when
+    # nothing measured it: a dry run moves nothing, a deletion transfers
+    # nothing, and a small file can start and finish between two stats ticks.
+    peak_speed_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
     mtime: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
 

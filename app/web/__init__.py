@@ -27,7 +27,7 @@ from jinja2 import pass_context
 from jinja2.runtime import Context
 from markupsafe import Markup
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -1262,6 +1262,84 @@ def _run_context(
                     job, run, box=_box(request), settings=request.app.state.settings
                 )
     return context
+
+
+# Sortable columns, mapped here rather than taken from the query string. A
+# column name arriving in a URL must not reach an ORDER BY.
+_HISTORY_SORTS = {
+    "when": JobRun.started_at,
+    "job": Job.name,
+    "run": JobRunChange.run_id,
+    "action": JobRunChange.action,
+    "path": JobRunChange.path,
+    "size": JobRunChange.size,
+    "speed": JobRunChange.peak_speed_bps,
+}
+HISTORY_PAGE_SIZE = 100
+
+
+@router.get("/history", response_class=HTMLResponse)
+def history_page(
+    request: Request,
+    q: str | None = None,
+    sort: str = "when",
+    direction: str = "desc",
+    page: int = 1,
+    session: Session = Depends(get_session),
+) -> Any:
+    """Every file this instance has moved, across all jobs and runs.
+
+    One row per change rather than per run: the run pages answer "what did this
+    run do", and this answers "what happened to this file", which is the
+    question someone actually has when a file is missing.
+    """
+    security.require_user(request, session)
+    context = _page_context(request, session)
+
+    column = _HISTORY_SORTS.get(sort, JobRun.started_at)
+    ordering = column.asc() if direction == "asc" else column.desc()
+
+    base = (
+        select(JobRunChange, JobRun, Job)
+        .join(JobRun, JobRun.id == JobRunChange.run_id)
+        .join(Job, Job.id == JobRun.job_id)
+    )
+    term = (q or "").strip()
+    if term:
+        # Path and job name only. Matching a size or a speed as text finds
+        # coincidences rather than files.
+        like = f"%{term}%"
+        base = base.where(or_(JobRunChange.path.ilike(like), Job.name.ilike(like)))
+
+    total = session.scalar(select(func.count()).select_from(base.subquery())) or 0
+    pages = max(1, (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE)
+    current = min(max(1, page), pages)
+
+    rows = session.execute(
+        base.order_by(ordering, JobRunChange.id.desc())
+        .limit(HISTORY_PAGE_SIZE)
+        .offset((current - 1) * HISTORY_PAGE_SIZE)
+    ).all()
+
+    # The endpoint labels each row is "at". Built once per job rather than per
+    # row: a page of 100 changes is usually a handful of jobs.
+    labels: dict[int, tuple[str, str]] = {}
+    for _change, _run, job in rows:
+        if job.id not in labels:
+            labels[job.id] = (
+                _endpoint_label(job.source_connection, job.source_path),
+                _endpoint_label(job.dest_connection, job.dest_path),
+            )
+
+    context["rows"] = rows
+    context["labels"] = labels
+    context["query"] = term
+    context["sort"] = sort if sort in _HISTORY_SORTS else "when"
+    context["direction"] = "asc" if direction == "asc" else "desc"
+    context["page"] = current
+    context["pages"] = pages
+    context["total"] = total
+    return templates.TemplateResponse(request, "history.html", context)
 
 
 @router.get("/runs/{run_id}", response_class=HTMLResponse)

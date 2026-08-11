@@ -74,6 +74,14 @@ class DryRunLog:
     # True when rclone aborted because the delete threshold was reached, which
     # means the operation list is truncated and must not be presented as complete.
     max_delete_hit: bool = False
+    # The fastest rclone reported each file moving, keyed by its path. Built
+    # from the `transferring` array of the stats events, which is the only place
+    # a per-file speed appears at all.
+    #
+    # A file that starts and finishes between two stats ticks never appears
+    # there, so it has no entry. That is "not measured", not "zero", and the
+    # history renders it blank rather than inventing a number.
+    peak_speeds: dict[str, float] = field(default_factory=dict)
 
     @property
     def copies(self) -> list[PlannedOperation]:
