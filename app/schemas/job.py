@@ -52,7 +52,7 @@ class JobBase(BaseModel):
     continuous: bool = False
     continuous_interval_seconds: int = Field(default=60, ge=5, le=86400)
     continuous_idle_interval_seconds: int = Field(default=900, ge=5, le=86400)
-    quiet_period_seconds: int = Field(default=30, ge=0, le=3600)
+    quiet_period_seconds: int = Field(default=0, ge=0, le=3600)
 
     filters: JobFilters = Field(default_factory=JobFilters)
     filter_preset_ids: list[int] = Field(default_factory=list)
@@ -182,7 +182,7 @@ class JobRead(BaseModel):
     continuous: bool = False
     continuous_interval_seconds: int = 60
     continuous_idle_interval_seconds: int = 900
-    quiet_period_seconds: int = 30
+    quiet_period_seconds: int = 0
     last_checked_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

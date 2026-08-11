@@ -232,19 +232,33 @@ def performance_args(job: Job) -> list[str]:
 
 
 def quiet_period_args(job: Job) -> list[str]:
-    """Leave a file alone until it has stopped changing. Continuous mode only.
+    """Leave a file alone until it has stopped changing.
 
     `--min-age` skips anything modified more recently than the given age, so a
-    file still being written is picked up on a later cycle instead of copied
-    half finished and copied again next time. Verified present in rclone 1.74.4.
+    file still being written is picked up on a later run instead of copied half
+    finished. Verified present in rclone 1.74.4.
 
-    Not applied to a scheduled or manual run: those happen when someone chose,
-    and silently skipping recent files there would be surprising rather than
-    protective.
+    **Applied to every run, not only continuous ones.** It was continuous only,
+    on the reasoning that skipping recent files would surprise someone who had
+    just pressed Run. That is backwards for the case it exists for: a download
+    client writing into the source directory does not know or care that a
+    schedule fired at 2am, and half a file copied unattended is worse than a
+    file collected on the next run.
+
+    Off when set to zero, which is what every job that predates this gets, so no
+    existing schedule changed behaviour silently.
+
+    Modification time is the signal, so this catches a file still being appended
+    to. It does not catch a client that writes the whole file and then rewrites
+    it in place without touching the mtime. For that, exclude the client's
+    temporary names: the "Downloads in progress" filter preset does.
     """
-    if not job.continuous or job.quiet_period_seconds <= 0:
+    # `or 0` because a Job built in memory has not had the column default
+    # applied yet, so the attribute is None rather than 30 until it is flushed.
+    seconds = job.quiet_period_seconds or 0
+    if seconds <= 0:
         return []
-    return ["--min-age", f"{job.quiet_period_seconds}s"]
+    return ["--min-age", f"{seconds}s"]
 
 
 def resolve_max_delete(pct: int, dest_file_count: int) -> int:
@@ -268,7 +282,10 @@ def _run_phases(
     source_connection: Connection,
     dest_connection: Connection,
 ) -> Plan:
-    shared = filter_args(job) + performance_args(job)
+    # quiet_period_args here as well as in the live command: without it a dry
+    # run lists a file the run would skip, and the two disagree about the same
+    # tree.
+    shared = filter_args(job) + performance_args(job) + quiet_period_args(job)
     plan = Plan()
 
     with tempfile.TemporaryDirectory(prefix="hivesync-plan-") as workdir:

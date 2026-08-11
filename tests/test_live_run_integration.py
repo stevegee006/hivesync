@@ -13,6 +13,7 @@ needs the run to make no changes at all, which requires a pre-flight veto.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -429,3 +430,84 @@ def test_an_approval_is_for_one_run_only(tmp_path: Path, env) -> None:
 
     assert run.status == RunStatus.failed
     assert len(sorted(dst.iterdir())) == 4
+
+
+# --------------------------------------------------------------------------
+# The quiet period: a file still being written
+# --------------------------------------------------------------------------
+
+
+def test_a_file_still_being_written_is_left_alone(tmp_path: Path, env) -> None:
+    """The reported case: a download client is writing into the source while a
+    schedule fires. Half a file copied unattended is worse than a file collected
+    on the next run.
+
+    Asserted on filesystem state against real rclone, because --min-age is
+    rclone's own comparison and a unit test would only prove we build the flag.
+    """
+    _settings, _box, _factory, session = env
+    src = tmp_path / "src3"
+    dst = tmp_path / "dst3"
+    src.mkdir()
+    dst.mkdir()
+
+    settled = src / "settled.txt"
+    settled.write_text("finished ages ago\n", encoding="utf-8")
+    # Old enough to be past the quiet period.
+    old = time.time() - 600
+    os.utime(settled, (old, old))
+
+    # Written just now, as a download in progress would be.
+    (src / "downloading.part").write_text("half a file\n", encoding="utf-8")
+
+    run = _run(env, _job(session, src, dst, continuous=False, quiet_period_seconds=60))
+
+    assert run.status == RunStatus.success, run.summary
+    assert (dst / "settled.txt").exists(), "a settled file should still be copied"
+    assert not (dst / "downloading.part").exists(), (
+        "a file modified within the quiet period was copied while it was still being written"
+    )
+
+
+def test_the_file_arrives_once_it_has_settled(tmp_path: Path, env) -> None:
+    """Skipped, not dropped. The next run collects it."""
+    _settings, _box, _factory, session = env
+    src = tmp_path / "src4"
+    dst = tmp_path / "dst4"
+    src.mkdir()
+    dst.mkdir()
+    target = src / "downloading.part"
+    target.write_text("complete now\n", encoding="utf-8")
+
+    job = _job(session, src, dst, continuous=False, quiet_period_seconds=60)
+    assert _run(env, job).status == RunStatus.success
+    assert not (dst / "downloading.part").exists()
+
+    # Time passes and the file stops changing.
+    settled = time.time() - 600
+    os.utime(target, (settled, settled))
+
+    assert _run(env, job).status == RunStatus.success
+    assert (dst / "downloading.part").read_text(encoding="utf-8") == "complete now\n"
+
+
+def test_a_dry_run_and_a_live_run_see_the_same_files(tmp_path: Path, env) -> None:
+    """Without --min-age in the planning phases a preview lists a file the run
+    then skips, and the two disagree about the same tree."""
+    _settings, _box, _factory, session = env
+    src = tmp_path / "src5"
+    dst = tmp_path / "dst5"
+    src.mkdir()
+    dst.mkdir()
+    (src / "downloading.part").write_text("half\n", encoding="utf-8")
+
+    job = _job(session, src, dst, continuous=False, quiet_period_seconds=60)
+    planned = planner.create_run(session, job, trigger=RunTrigger.manual, mode=RunMode.dry_run)
+    settings, box, factory, _session = env
+    planner.PlanRunner(factory, box=box, settings=settings).run_now(planned.id)
+    session.expire_all()
+    preview = session.get(JobRun, planned.id)
+
+    assert preview is not None
+    assert preview.status == RunStatus.success, preview.summary
+    assert preview.summary["new"] == 0, "the preview offered to copy a file the run would skip"

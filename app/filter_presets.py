@@ -41,6 +41,34 @@ BUILTIN_PRESETS: dict[str, list[str]] = {
         "Thumbs.db",
         "desktop.ini",
     ],
+    # The other half of the answer to "do not copy a file that is still being
+    # written". The quiet period catches a file whose mtime is still moving;
+    # this catches the temporary names download clients use before the final
+    # rename, which is the sturdier signal because the rename is atomic.
+    #
+    # Patterns are unanchored so they match at every level, per the note above.
+    # Extensions are the ones the common clients actually write:
+    #   .part        aria2, wget, Firefox, qBittorrent (with the option on)
+    #   .!qB         qBittorrent's default incomplete suffix
+    #   .!ut, .bc!   uTorrent and BitComet
+    #   .crdownload  Chrome and Chromium
+    #   .partial     Edge and some SABnzbd configurations
+    #   .filepart    JDownloader
+    # plus the incomplete directories SABnzbd and NZBGet write into.
+    "Downloads in progress": [
+        "*.part",
+        "*.partial",
+        "*.!qB",
+        "*.!ut",
+        "*.bc!",
+        "*.crdownload",
+        "*.filepart",
+        "*.tmp",
+        "*.temp",
+        "incomplete/**",
+        "_UNPACK_*/**",
+        "_FAILED_*/**",
+    ],
     "Common junk": [
         ".DS_Store",
         "Thumbs.db",

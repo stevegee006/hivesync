@@ -6,6 +6,8 @@ keeps running, with a policy nobody chose. Both cases below were real.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
@@ -296,3 +298,94 @@ def test_continuous_plus_a_schedule_is_refused_by_the_form(
 
     assert response.status_code == 400
     assert "either continuous or scheduled" in response.text
+
+
+# --------------------------------------------------------------------------
+# The quiet period, which now applies to every run
+# --------------------------------------------------------------------------
+
+
+def test_the_quiet_period_is_not_inside_the_continuous_block() -> None:
+    """It was continuous only, so a scheduled job had no protection against a
+    download client writing into the source. The control has to be reachable
+    without turning watching on."""
+    form = Path("app/web/templates/jobs/form.html").read_text(encoding="utf-8")
+
+    field = form.index('name="quiet_period_seconds"')
+    continuous = form.index("continuous: {{")
+    assert field < continuous, (
+        "the quiet period control is inside the continuous section, so it cannot "
+        "be set on a scheduled job"
+    )
+
+
+def test_a_scheduled_job_passes_the_quiet_period() -> None:
+    """The whole point of the change. A job that is not continuous still needs a
+    file that is being written left alone."""
+    from app.engines.rclone import quiet_period_args
+    from app.models import Job
+
+    scheduled = Job(name="s", continuous=False, quiet_period_seconds=30)
+    assert quiet_period_args(scheduled) == ["--min-age", "30s"]
+
+
+def test_zero_turns_the_quiet_period_off() -> None:
+    from app.engines.rclone import quiet_period_args
+    from app.models import Job
+
+    assert quiet_period_args(Job(name="s", continuous=False, quiet_period_seconds=0)) == []
+    assert quiet_period_args(Job(name="c", continuous=True, quiet_period_seconds=0)) == []
+
+
+def test_the_plan_and_the_run_agree_about_which_files_they_see() -> None:
+    """Without this a dry run lists a file the live run then skips, and the two
+    disagree about the same tree."""
+    source = Path("app/engines/rclone.py").read_text(encoding="utf-8")
+
+    shared = source[source.index("shared = filter_args(job)") :]
+    assert "quiet_period_args(job)" in shared.split("\n")[0], (
+        "the planning phases do not pass --min-age, so a preview sees files the run will skip"
+    )
+
+
+def test_bisync_passes_it_too() -> None:
+    """It writes to both sides, so a file still being written is two chances to
+    copy it half finished."""
+    source = Path("app/engines/bisync.py").read_text(encoding="utf-8")
+
+    assert "quiet_period_args(job)" in source
+
+
+def test_a_preset_excludes_the_names_download_clients_write() -> None:
+    """Modification time catches a file still growing. A client that writes
+    under a temporary name and renames at the end needs the name excluded."""
+    from app.filter_presets import BUILTIN_PRESETS
+
+    rules = BUILTIN_PRESETS["Downloads in progress"]
+
+    for pattern in ("*.part", "*.!qB", "*.crdownload", "*.partial"):
+        assert pattern in rules, f"{pattern} is missing"
+    # Unanchored, so they match at every level rather than only the sync root.
+    assert not any(rule.startswith("**/") for rule in rules)
+
+
+def test_the_quiet_period_default_is_stated_once() -> None:
+    """It lived in four places: the column, the schema, the form handler and the
+    template. The handler's copy was still 30 after the others became 0, so a
+    job created without the field got a quiet period nobody chose, and once this
+    applied to every run that job silently copied nothing it had just been given.
+    """
+    from app.models import Job
+    from app.schemas.job import JobCreate
+
+    schema_default = JobCreate.model_fields["quiet_period_seconds"].default
+    column_default = Job.__table__.c.quiet_period_seconds.default.arg
+    assert schema_default == column_default == 0
+
+    # The handler derives it rather than repeating it.
+    web = Path("app/web/__init__.py").read_text(encoding="utf-8")
+    assert 'JobCreate.model_fields["quiet_period_seconds"].default' in web
+
+    # And the template offers the same number for a new job.
+    form = Path("app/web/templates/jobs/form.html").read_text(encoding="utf-8")
+    assert "job.quiet_period_seconds if job else 0" in form

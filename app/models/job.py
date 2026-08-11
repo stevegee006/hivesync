@@ -206,7 +206,12 @@ class Job(Base, TimestampMixin):
     )
     # Passed to rclone as --min-age, so a file still being written is left until
     # it settles rather than copied half finished.
-    quiet_period_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # Off by default. It applies to every run, including a manual one, so a
+    # non-zero default means creating files and pressing Run copies nothing:
+    # measured, not guessed. Ten integration tests failed exactly that way.
+    # Turned on per job, for the ones whose source is written to by something
+    # else, such as a download directory.
+    quiet_period_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Proof of life for a continuous job between the runs that actually did
     # something. A check that changes nothing records no run, so without this the
     # UI could not tell "watching quietly" from "stopped".

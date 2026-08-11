@@ -921,8 +921,14 @@ def _job_payload(form: dict[str, str], preset_ids: list[int]) -> JobCreate:
         continuous_interval_seconds=number("continuous_interval_seconds") or 60,
         continuous_idle_interval_seconds=number("continuous_idle_interval_seconds") or 900,
         # A quiet period of zero is meaningful, so `or` would be wrong here.
+        # Falls back to the schema default rather than repeating the number.
+        # It was hardcoded to 30 here, so a job created without the field got a
+        # quiet period nobody chose, and once this applied to every run that
+        # job silently copied nothing it had just been given.
         quiet_period_seconds=(
-            value if (value := number("quiet_period_seconds")) is not None else 30
+            value
+            if (value := number("quiet_period_seconds")) is not None
+            else JobCreate.model_fields["quiet_period_seconds"].default
         ),
         max_delete_pct=number("max_delete_pct") or 0,
         transfers=number("transfers"),

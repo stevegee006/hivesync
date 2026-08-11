@@ -195,10 +195,18 @@ def test_the_quiet_period_becomes_min_age() -> None:
     assert quiet_period_args(job) == ["--min-age", "30s"]
 
 
-def test_a_scheduled_job_gets_no_quiet_period() -> None:
-    """A scheduled run happens when someone chose. Silently skipping recent
-    files there would be surprising rather than protective."""
-    assert quiet_period_args(Job(continuous=False, quiet_period_seconds=30)) == []
+def test_a_scheduled_job_gets_the_quiet_period_too() -> None:
+    """It used to be continuous only, on the reasoning that skipping recent
+    files would surprise someone who had just pressed Run. That is backwards for
+    the case it exists for: a download client writing into the source directory
+    does not know a schedule fired at 2am, and half a file copied unattended is
+    worse than a file collected on the next run.
+
+    Existing jobs were migrated to zero, so none of them changed silently."""
+    assert quiet_period_args(Job(continuous=False, quiet_period_seconds=30)) == [
+        "--min-age",
+        "30s",
+    ]
 
 
 def test_a_quiet_period_of_zero_is_off() -> None:

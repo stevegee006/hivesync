@@ -172,6 +172,32 @@
         </p>
       </div>
 
+      <div>
+        <label for="quiet_period_seconds" class="block text-sm text-slate-400">
+          Leave files alone for
+        </label>
+        <div class="mt-1 flex flex-wrap items-center gap-2">
+          <input id="quiet_period_seconds" type="number" name="quiet_period_seconds"
+                 min="0" max="3600" value="{{ job.quiet_period_seconds if job else 0 }}"
+                 class="w-24 rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-slate-500 focus:outline-none">
+          <span class="text-sm text-slate-400">seconds after they change</span>
+        </div>
+        <p class="mt-1 max-w-2xl text-xs text-slate-500">
+          A file being written right now, by a download client or anything else,
+          is left until it settles rather than copied half finished. It is
+          collected on the next run.
+          <strong class="text-slate-400">Zero, the default, turns this off</strong>,
+          because it applies to a manual run too: with it on, files you have just
+          put in place are skipped until they settle.
+        </p>
+        <p class="mt-1 max-w-2xl text-xs text-slate-500">
+          This watches modification time, so it catches a file still growing. A
+          client that writes under a temporary name and renames at the end is
+          better handled by the <a href="/filter-presets" class="underline">Downloads
+          in progress</a> filter, and the two work well together.
+        </p>
+      </div>
+
       <div x-data="{ mode: '{{ job.delete_mode.value if job else 'none' }}' }">
         <label for="delete_mode" class="block text-sm text-slate-400">Extra files on the destination</label>
         <select id="delete_mode" name="delete_mode" x-model="mode"
@@ -411,17 +437,11 @@
                    class="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100">
             seconds while idle
           </div>
-          <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-            ignore files changed in the last
-            <input type="number" name="quiet_period_seconds" min="0" max="3600"
-                   value="{{ job.quiet_period_seconds if job else 30 }}"
-                   class="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm text-slate-100">
-            seconds
-          </div>
           <p class="text-xs text-slate-500">
-            The quiet period leaves a file that is still being written until it
-            settles. A check that changes nothing records no run, so the history
-            keeps only the cycles that did something.
+            A check that changes nothing records no run, so the history keeps
+            only the cycles that did something. Watching a directory something
+            else writes into is the case the quiet period above exists for:
+            30 seconds is a reasonable starting point.
           </p>
         </div>
       </div>

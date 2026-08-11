@@ -49,6 +49,7 @@ from app.engines.rclone import (
     endpoints_and_paths,
     filter_args,
     performance_args,
+    quiet_period_args,
 )
 from app.engines.rcloneconf import ALIAS_DEST, ALIAS_SOURCE, Prepared, RemoteConfigError
 from app.models import ChangeAction, ChangeSide, ConflictResolve, Direction, Job
@@ -319,7 +320,14 @@ def build_bisync_command(
         args.append("--check-access")
 
     args += list(archive or [])
-    args += _comparison_args_for_bisync(job) + filter_args(job) + performance_args(job)
+    # The quiet period applies here too: bisync writes to both sides, so a file
+    # still being written is two chances to copy it half finished.
+    args += (
+        _comparison_args_for_bisync(job)
+        + filter_args(job)
+        + performance_args(job)
+        + quiet_period_args(job)
+    )
     return prepared.argv(*args)
 
 
