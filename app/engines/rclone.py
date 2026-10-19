@@ -93,6 +93,25 @@ class RcloneEngine(SyncEngine):
         )
 
 
+def operation_for(job: Job) -> str:
+    """`copy` or `sync`, for one way jobs.
+
+    A copy cannot remove anything, so it is used whenever deletion is off.
+    Archiving is still a sync: rclone moves the extra file aside rather than
+    deleting it, which is a deletion from the destination's point of view.
+
+    **The planner and the runner must both call this.** They used to decide
+    separately, and only the runner was taught to branch, so planning always ran
+    `sync --dry-run`. A copy-only job therefore produced a plan full of
+    deletions that the live run could never perform, the preview said files
+    would be removed when nothing would be, and worse, the pre-flight brake read
+    that plan and refused the run: a job that cannot delete anything was blocked
+    for deleting too much, with a button offering to approve deletions that were
+    never going to happen.
+    """
+    return "copy" if job.delete_mode == DeleteMode.none else "sync"
+
+
 def build_sync_command(
     job: Job,
     prepared: rcloneconf.Prepared,
@@ -110,13 +129,8 @@ def build_sync_command(
     Deletion only happens at all when the job asks for it: without delete_mode
     the command is a copy, which never removes anything from the destination.
     """
-    # A copy cannot remove anything, so it is used whenever deletion is off.
-    # Archiving is still a sync: rclone moves the extra file aside rather than
-    # deleting it, which is a deletion from the destination's point of view.
-    operation = "copy" if job.delete_mode == DeleteMode.none else "sync"
-
     return prepared.argv(
-        operation,
+        operation_for(job),
         src_spec,
         dst_spec,
         "--use-json-log",
@@ -335,9 +349,11 @@ def _run_phases(
 
         presence = parsers.parse_presence(**categories)
 
-        # Phase 2: what the real flag set would actually do.
+        # Phase 2: what the real flag set would actually do. The operation has to
+        # be the one the live run will use, or the preview describes a different
+        # command from the one the button runs.
         sync_argv = prepared.argv(
-            "sync",
+            operation_for(job),
             src_spec,
             dst_spec,
             "--dry-run",

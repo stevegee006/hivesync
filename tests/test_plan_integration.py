@@ -29,6 +29,7 @@ from app.models import (
     CompareMode,
     Connection,
     ConnectionType,
+    DeleteMode,
     Direction,
     Job,
     RunMode,
@@ -91,6 +92,18 @@ def _job_over(session, src: Path, dst: Path, **overrides) -> Job:  # noqa: ANN00
         "dest_path": "",
         "direction": Direction.source_to_dest,
         "compare_mode": CompareMode.mtime_size,
+        # Explicit, and not the model's default of `none`.
+        #
+        # These tests are about what a plan classifies and what the brake does
+        # with it, which needs a job that can delete. They ran on the default
+        # for seven milestones and still reported deletions, because planning
+        # was hardcoded to `sync` while the live command branched on this field.
+        # So the suite asserted the bug: a copy-only job was expected to plan
+        # removals it had no code path to perform, and
+        # `test_empty_source_produces_a_plan_that_deletes_everything`, which is
+        # M3's acceptance criterion, was checking it against a job that could
+        # not delete anything at all.
+        "delete_mode": DeleteMode.delete,
         "max_delete_pct": 20,
         "filters": {},
     }
@@ -383,3 +396,23 @@ def test_probed_endpoints_with_hashes_produce_no_hash_warning(tree, env) -> None
 
     plan = RcloneEngine().plan(job, box=box, settings=settings)
     assert not any("hash" in w for w in plan.warnings)
+
+
+def test_a_copy_only_job_plans_no_deletions(tree, env) -> None:
+    """The counterpart to the fixture's `delete` default, and the bug itself.
+
+    Planning was hardcoded to `sync --dry-run` while the live command branched
+    on delete_mode, so a job set to leave extra files alone was previewed as
+    removing every one of them. The brake then read that plan and refused the
+    run, offering to approve deletions against a command that cannot delete.
+    """
+    src, dst = tree
+    settings, box, session = env
+
+    plan = RcloneEngine().plan(
+        _job_over(session, src, dst, delete_mode=DeleteMode.none), box=box, settings=settings
+    )
+
+    assert plan.deleted_count == 0, [c.path for c in plan.changes if c.action.value == "deleted"]
+    # The copy side is unaffected: it still says what it would transfer.
+    assert plan.new_count > 0

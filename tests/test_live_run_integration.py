@@ -596,3 +596,64 @@ def test_a_new_file_is_labelled_new_and_an_overwrite_updated(tmp_path: Path, env
     # And the cards agree with the table, which is the property that broke.
     assert run.summary["new"] == 1, run.summary
     assert run.summary["updated"] == 1, run.summary
+
+
+def test_a_copy_only_job_neither_plans_nor_performs_a_deletion(tmp_path: Path, env) -> None:
+    """Reported from production: a job set to leave extra files alone was
+    refused by the delete brake, offering to approve 120 deletions.
+
+    Planning was hardcoded to `sync --dry-run` while the live command branched
+    on delete_mode, so the plan listed every extra file on the destination as a
+    deletion. The pre-flight brake reads that plan, so a job with no code path
+    that can delete anything was blocked for deleting too much.
+
+    Against the real binary, because the whole bug was a difference between the
+    command we thought we ran and the one we did.
+    """
+    _settings, _box, _factory, session = env
+    src = tmp_path / "csrc"
+    dst = tmp_path / "cdst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "wanted.txt").write_text("copy me\n", encoding="utf-8")
+    # Far more extra files than a 20% brake would ever allow, so a plan built as
+    # a sync is certain to be refused.
+    for index in range(12):
+        (dst / f"keep{index}.txt").write_text("not from the source\n", encoding="utf-8")
+
+    job = _job(session, src, dst, delete_mode=DeleteMode.none)
+
+    run = _run(env, job)
+
+    assert run.status == RunStatus.success, run.summary
+    assert run.summary["deleted"] == 0, run.summary
+    assert run.files_deleted == 0
+    # The plan behind the run proposed none either, which is what the brake reads.
+    assert run.summary.get("planned_deleted") == 0, run.summary
+    # And on disk: every extra file is still there, plus the copied one.
+    assert (dst / "wanted.txt").exists()
+    for index in range(12):
+        assert (dst / f"keep{index}.txt").exists(), f"keep{index}.txt was removed"
+
+
+def test_a_refusal_reports_the_same_numbers_as_its_banner(tmp_path: Path, env) -> None:
+    """The banner named the real figures, the cards below it did not.
+
+    `_fail` wrote only new, updated, deleted and refused_deletions, and the
+    template renders a missing key as zero, so a refusal that said "26 out of
+    the 126 on the destination" was followed by "The destination holds 0 files,
+    so the 20% brake allows 1 deletions" on the same screen.
+    """
+    _settings, _box, _factory, session = env
+    src, dst = _doomed(tmp_path, 3)
+
+    run = _run(env, _job(session, src, dst, max_delete_pct=1))
+
+    assert run.status == RunStatus.failed
+    # Four files on the destination: keep.txt plus three doomed ones.
+    assert run.summary["dest_file_count"] == 4, run.summary
+    assert run.summary["max_delete_threshold"] == 1, run.summary
+    assert run.summary["unchanged"] is not None
+    # And the figures in the message are the ones that were stored.
+    assert str(run.summary["dest_file_count"]) in run.summary["error"]
+    assert f"allows {run.summary['max_delete_threshold']} " in run.summary["error"]

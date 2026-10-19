@@ -80,6 +80,12 @@ class BrakeEngaged(Exception):
     `deletions` is the number an operator would be approving if they chose to
     run it anyway. None means the refusal was not about a count at all, such as
     a missing sentinel file, and there is nothing to approve.
+
+    `plan` carries the figures the message already interpolates. Without it the
+    page contradicted its own banner: the banner named 126 destination files and
+    26 allowed deletions, while the line under the cards read "The destination
+    holds 0 files, so the 20% brake allows 1 deletions", because `_fail` never
+    wrote those keys and the template defaults a missing one to zero.
     """
 
     def __init__(
@@ -88,10 +94,14 @@ class BrakeEngaged(Exception):
         *,
         deletions: int | None = None,
         changes: list[PlannedChange] | None = None,
+        plan: Plan | None = None,
+        threshold: int | None = None,
     ) -> None:
         super().__init__(message)
         self.deletions = deletions
         self.changes = changes or []
+        self.plan = plan
+        self.threshold = threshold
 
 
 class LiveRunner:
@@ -453,6 +463,8 @@ class LiveRunner:
                 "are intended, raise the brake for this job.",
                 deletions=plan.deleted_count,
                 changes=plan.changes,
+                plan=plan,
+                threshold=threshold,
             )
 
 
@@ -933,6 +945,18 @@ def _fail(
                 "refused_deletions": refused.deletions,
             }
         )
+        if refused.plan is not None:
+            # The same keys a successful run writes. A missing one is rendered
+            # as zero, so leaving them out made the page disagree with its own
+            # banner about how many files the destination holds.
+            summary.update(
+                {
+                    "unchanged": refused.plan.unchanged_count,
+                    "bytes": 0,
+                    "dest_file_count": refused.plan.dest_file_count,
+                    "max_delete_threshold": refused.threshold,
+                }
+            )
 
     run.summary = summary
     session.commit()

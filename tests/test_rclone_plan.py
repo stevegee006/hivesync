@@ -260,3 +260,85 @@ def test_copy_is_used_when_deletion_is_off() -> None:
     assert "sync" not in argv
     # Still passed, so the invariant holds regardless of the operation.
     assert "--max-delete" in argv
+
+
+# --------------------------------------------------------------------------
+# The plan and the run must describe the same command
+# --------------------------------------------------------------------------
+
+
+def _planning_argv(job: Job) -> list[str]:
+    """The phase 2 argv the planner would build, without running anything.
+
+    `_run_phases` shells out twice, so `process.run` is replaced with a recorder
+    that returns empty output. The plan that comes back is meaningless; the argv
+    is the point.
+    """
+    from app.crypto import Redactor
+    from app.engines import process
+    from app.engines.rcloneconf import Prepared
+
+    captured: list[list[str]] = []
+
+    class _Result:
+        ok = True
+        exit_code = 0
+        stdout = ""
+        stderr = ""
+        command_line = ""
+
+        def failure_summary(self) -> str:
+            return ""
+
+    original = process.run
+    process.run = lambda argv, **kwargs: (captured.append(list(argv)), _Result())[1]  # type: ignore[assignment]
+    try:
+        prepared = Prepared(endpoints={}, env={}, base_args=["--config", ""], redactor=Redactor([]))
+        rclone._run_phases(
+            job, prepared, "src:", "dst:", job.source_connection, job.dest_connection
+        )
+    finally:
+        process.run = original  # type: ignore[assignment]
+
+    # Phase 1 is the check, phase 2 is the one that decides what would change.
+    return captured[-1]
+
+
+@pytest.mark.parametrize(
+    "delete_mode, expected",
+    [(DeleteMode.none, "copy"), (DeleteMode.delete, "sync"), (DeleteMode.archive, "sync")],
+)
+def test_the_plan_runs_the_same_operation_the_run_will(
+    delete_mode: DeleteMode, expected: str
+) -> None:
+    """The reported bug, and the shape of it.
+
+    Planning was hardcoded to `sync` while the live command branched on
+    delete_mode, so a copy-only job was previewed as a command it would never
+    run. Two writers of one fact, only one of them taught to branch.
+    """
+    from app.crypto import Redactor
+    from app.engines.rcloneconf import Prepared
+
+    job = _job(delete_mode=delete_mode)
+    prepared = Prepared(endpoints={}, env={}, base_args=["--config", ""], redactor=Redactor([]))
+
+    live = rclone.build_sync_command(job, prepared, "src:", "dst:", max_delete=7)
+    planned = _planning_argv(job)
+
+    assert expected in live
+    assert expected in planned
+    # And they agree, which is the property that broke.
+    operations = {"copy", "sync"}
+    assert operations & set(live) == operations & set(planned)
+
+
+def test_a_copy_only_job_is_never_planned_as_a_sync() -> None:
+    """A plan built with `sync` lists deletions the run cannot perform. The
+    pre-flight brake reads that plan, so the job was refused for deleting too
+    much when it could not delete at all: the operator was shown 120 deletions
+    and a button offering to approve them."""
+    planned = _planning_argv(_job(delete_mode=DeleteMode.none))
+
+    assert "copy" in planned
+    assert "sync" not in planned
